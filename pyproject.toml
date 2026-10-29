@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ehrgraph"
+version = "0.1.0"
+description = "Time-series embeddings of comorbidity trajectories via linear-algebraic patient-similarity graphs"
+requires-python = ">=3.11"
+# Pinned dependencies live in requirements.txt; install them with
+# `pip install -r requirements.txt` before `pip install -e .`.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

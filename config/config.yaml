@@ -1,0 +1,58 @@
+# Central configuration for the EHR comorbidity-trajectory project.
+# Every tunable parameter lives here; code must not hard-code values.
+# Relative paths are resolved against the project root, not the working directory.
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  artifacts_dir: artifacts
+  reports_dir: reports
+  figures_dir: reports/figures
+  patients_csv: data/raw/patients.csv
+  conditions_csv: data/raw/conditions.csv
+  encounters_csv: data/raw/encounters.csv
+
+# Global random seed used by random, numpy and torch.
+seed: 42
+
+data:
+  min_conditions_per_patient: 2
+
+trajectories:
+  window: yearly
+  # Placeholder range: revisit once the Synthea date range has been inspected.
+  start_year: 2010
+  end_year: 2020
+
+features:
+  tfidf_ngram_range: [1, 2]
+  # Exponential time decay exp(-lambda * age_in_years) applied to older events.
+  time_decay_lambda: 0.1
+
+graph:
+  k: 10
+  metric: cosine
+
+labels:
+  # Prediction cutoff: features use only events strictly before this date.
+  # Must be after the last trajectory window (end_year) to avoid leakage.
+  cutoff_date: 2021-01-01
+  # A patient is positive if a target condition first appears within this many
+  # years after the cutoff.
+  horizon_years: 2
+  # SNOMED-CT codes defining the outcome; to be chosen when labels.py is built.
+  target_codes: []
+
+model:
+  hidden_dim: 64
+  embed_dim: 32
+  dropout: 0.5
+  lr: 0.01
+  # Written as 5.0e-4 (not 5e-4): PyYAML reads 5e-4 as a string.
+  weight_decay: 5.0e-4
+  epochs: 200
+
+split:
+  train: 0.7
+  val: 0.15
+  test: 0.15
