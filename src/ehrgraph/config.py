@@ -58,6 +58,10 @@ class PathsConfig:
     transition_svd_npz: Path
     features_summary_md: Path
     comorbidity_heatmap_fig: Path
+    graphs_dir: Path
+    graphs_summary_md: Path
+    eigenvalues_fig: Path
+    graph_drift_fig: Path
 
 
 @dataclass(frozen=True)
@@ -106,10 +110,18 @@ class FeaturesConfig:
 
 @dataclass(frozen=True)
 class GraphConfig:
-    """Patient-similarity k-NN graph settings."""
+    """Patient-similarity graph, spectral analysis and drift settings; see ``graph``."""
 
     k: int
     metric: str
+    knn_working_memory_mb: int
+    spectral_dim: int
+    eigengap_n_eigenvalues: int
+    eigengap_min_clusters: int
+    kmeans_n_init: int
+    phenotype_top_conditions: int
+    phenotype_min_patients: int
+    drift_jump_threshold: float
 
 
 @dataclass(frozen=True)

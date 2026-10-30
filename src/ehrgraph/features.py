@@ -715,6 +715,35 @@ def chronic_mask(events: pd.DataFrame, min_duration_days: int) -> pd.Series:
     return events["stop"].isna() | (duration > pd.Timedelta(days=min_duration_days))
 
 
+def chronic_presence(trajectories: Trajectories, cfg: Config) -> tuple[sp.csr_matrix, tuple[str, ...]]:
+    """Flag each patient's chronic conditions in the training period.
+
+    Entry [p, j] is 1 if a chronic episode (``chronic_mask``) of code j is active
+    in a training-period window for patient p; as in ``build_chronic_comorbidity``.
+
+    Args:
+        trajectories: ``trajectories.load_trajectories`` output.
+        cfg: Project configuration.
+
+    Returns:
+        Binary CSR (len(trajectories.patient_ids), n_codes) and its column codes,
+        the feature vocabulary.
+
+    Raises:
+        ValueError: If no window closes by the cutoff.
+    """
+    codes, _ = feature_vocabulary(trajectories.codes, cfg)
+    active = _active_chronic(trajectories, codes, _training_years(cfg), cfg).drop_duplicates(
+        ["patient_id", "col"]
+    )
+    rows = pd.Index(trajectories.patient_ids).get_indexer(active["patient_id"])
+    matrix = sp.csr_matrix(
+        (np.ones(len(active)), (rows, active["col"].to_numpy())),
+        shape=(len(trajectories.patient_ids), len(codes)),
+    )
+    return matrix, codes
+
+
 def build_chronic_comorbidity(trajectories: Trajectories, cfg: Config) -> Comorbidity:
     """Count patients with pairs of chronic conditions active together.
 
@@ -735,27 +764,13 @@ def build_chronic_comorbidity(trajectories: Trajectories, cfg: Config) -> Comorb
     Raises:
         ValueError: If no window closes by the cutoff.
     """
-    years = feature_window_years(cfg)
-    if not years:
-        raise ValueError(f"no window closes by the cutoff {cfg.labels.cutoff_date}")
+    years = _training_years(cfg)
     codes, _ = feature_vocabulary(trajectories.codes, cfg)
     events = trajectories.events
     in_period = np.logical_or.reduce([active_in_window(events, year) for year in years])
     population = int(events.loc[in_period, "patient_id"].nunique())
 
-    chronic = events[
-        events["code"].isin(codes) & chronic_mask(events, cfg.features.chronic_min_duration_days)
-    ]
-    active = (
-        pd.concat(
-            [
-                chronic.loc[active_in_window(chronic, year), ["patient_id", "code"]].assign(year=year)
-                for year in years
-            ]
-        )
-        .drop_duplicates()
-        .assign(col=lambda df: pd.Index(codes).get_indexer(df["code"]))
-    )
+    active = _active_chronic(trajectories, codes, years, cfg)
     per_code = active.drop_duplicates(["patient_id", "col"]).groupby("col").size()
     pairs = active.merge(active, on=["patient_id", "year"], suffixes=("_a", "_b"))
     per_pair = (
@@ -1250,6 +1265,37 @@ def write_features_summary(
     path.write_text(text, encoding="utf-8")
     logger.info("Wrote %s", path)
     return text
+
+
+def _training_years(cfg: Config) -> tuple[int, ...]:
+    """Return ``config.feature_window_years``, raising if no window closes by the cutoff."""
+    years = feature_window_years(cfg)
+    if not years:
+        raise ValueError(f"no window closes by the cutoff {cfg.labels.cutoff_date}")
+    return years
+
+
+def _active_chronic(
+    trajectories: Trajectories, codes: Sequence[str], years: Sequence[int], cfg: Config
+) -> pd.DataFrame:
+    """List (patient_id, code, year, col) for chronic episodes of ``codes`` active in ``years``.
+
+    One row per patient, code and window; col is the code's index in ``codes``.
+    """
+    events = trajectories.events
+    chronic = events[
+        events["code"].isin(codes) & chronic_mask(events, cfg.features.chronic_min_duration_days)
+    ]
+    return (
+        pd.concat(
+            [
+                chronic.loc[active_in_window(chronic, year), ["patient_id", "code"]].assign(year=year)
+                for year in years
+            ]
+        )
+        .drop_duplicates()
+        .assign(col=lambda df: pd.Index(codes).get_indexer(df["code"]))
+    )
 
 
 def _nonempty_rows(matrix: sp.csr_matrix) -> sp.csr_matrix:

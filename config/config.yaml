@@ -42,6 +42,13 @@ paths:
   transition_svd_npz: artifacts/transition_svd.npz
   features_summary_md: reports/features_summary.md
   comorbidity_heatmap_fig: reports/figures/comorbidity_lift_heatmap.png
+  # Phase 4 outputs (graph.save_graphs). graphs_dir holds W_<year>.npz and
+  # A_hat_<year>.npz per training-period window, graphs.json, and the final window's
+  # spectral embedding and phenotype clusters.
+  graphs_dir: data/processed/graphs
+  graphs_summary_md: reports/graphs_summary.md
+  eigenvalues_fig: reports/figures/eigenvalues_final_window.png
+  graph_drift_fig: reports/figures/graph_drift.png
 
 # Global random seed used by random, numpy and torch.
 seed: 42
@@ -127,12 +134,13 @@ features:
     - "110030002"  # Concussion injury of brain: with / without loss of consciousness (95.7%)
     - "126906006"  # Neoplasm of prostate: carcinoma in situ, metastatic neoplasm of prostate
     - "19169002"  # Miscarriage in first trimester: complete miscarriage, blighted ovum, tubal
+    - "262574004"  # Bullet wound: gunshot wound (1:1, 6 encounters); gunshot wound is kept
   # Meet the rule but kept, as they are not general codes of what they are recorded with:
   # Cerebral palsy (128188000; recorded with its complications), Miscarriage in second
   # trimester (85116003; recorded with its causes), and distinct conditions recorded
-  # together 1:1 in <= 8 patients: gallbladder calculus + acute cholecystitis, bullet +
-  # gunshot wound, injury of kidney + acquired coagulation disorder, and one-patient
-  # spina bifida and spinal cord injury bundles. The report lists them all.
+  # together 1:1 in <= 8 patients: gallbladder calculus + acute cholecystitis, injury of
+  # kidney + acquired coagulation disorder, and one-patient spina bifida and spinal cord
+  # injury bundles. The report lists them all.
   redundant_min_share: 0.95
   # Row norm applied to each window's TF-IDF matrix (sklearn.preprocessing.normalize).
   tfidf_norm: l2
@@ -151,8 +159,31 @@ features:
   chronic_min_duration_days: 365
 
 graph:
+  # k-NN patient-similarity graph per training-period window (graph.knn_graph); edge
+  # weight is cosine similarity, symmetrized with max(W, W^T). Only cosine is supported.
   k: 10
   metric: cosine
+  # Working memory (MB) sklearn may use per block of the k-NN search: cosine distances
+  # are computed a block of rows at a time, never as a dense N x N matrix.
+  knn_working_memory_mb: 8
+  # Spectral embedding of the final training window (its largest connected component):
+  # the spectral_dim smallest non-trivial eigenvectors of the normalized Laplacian.
+  spectral_dim: 16
+  # Eigengap analysis on the final window: the first eigengap_n_eigenvalues eigenvalues;
+  # the suggested number of clusters is the k >= eigengap_min_clusters before the
+  # largest gap.
+  eigengap_n_eigenvalues: 20
+  eigengap_min_clusters: 2
+  # Phenotypes: k-means on the first k eigenvectors (rows L2-normalized); each cluster's
+  # top chronic conditions by prevalence ratio (cluster / all clustered patients), among
+  # conditions present in at least phenotype_min_patients of the cluster's patients.
+  kmeans_n_init: 10
+  phenotype_top_conditions: 5
+  phenotype_min_patients: 10
+  # Graph drift: a consecutive-window pair whose mean neighbourhood Jaccard is below its
+  # adjacent pairs and more than this below the straight line through them (a dip, not a
+  # steady trend) is a jump; see graph.drift_jumps.
+  drift_jump_threshold: 0.1
 
 labels:
   # Prediction cutoff: features use only events strictly before this date.

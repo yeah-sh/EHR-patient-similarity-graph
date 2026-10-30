@@ -6,13 +6,13 @@ Built by `scripts/03_build_features.py` from the Phase 2 windows and trajectorie
 
 | Setting | Value |
 | --- | ---: |
-| Patients x feature codes | 2,646 x 205 (9 redundant codes dropped) |
+| Patients x feature codes | 2,646 x 204 (10 redundant codes dropped) |
 | Windows | 2017-2025 |
 | Training-period windows (model inputs, IDF fit, comorbidity) | 2017-2022, before the cutoff 2023-01-01 |
 | IDF documents (non-empty patient-windows in the training period) | 13,257 |
 | TF-IDF row norm | l2 |
 | Time decay lambda (weight of a window t - s years old) | 0.1 (exp(-lambda) = 0.905 per year) |
-| Transition SVD | fit on the 2022 block: 205^2 = 42,025 -> 32 components, 24.6% of the variance (first 1.7%) |
+| Transition SVD | fit on the 2022 block: 204^2 = 41,616 -> 32 components, 24.6% of the variance (first 1.7%) |
 | Transition block weight | 1 |
 
 Each block is row-L2-normalized before concatenation and the transition block scaled by its weight, so with both present it holds 50% of each row's squared norm. Window t's transition block uses only transitions that end by the end of year t and before the cutoff; the SVD basis is fit once, on the 2022 block, like the IDF on the whole training period.
@@ -30,6 +30,7 @@ Dropped from the feature vocabulary (code block, transitions, chronic comorbidit
 | 90460009 | Injury of neck (disorder) | 117 | 119 | 100.0% | Whiplash injury to neck |
 | 125601008 | Injury of knee (disorder) | 53 | 53 | 100.0% | Rupture of patellar tendon, Injury of medial collateral ligament of knee, Injury of anterior cruciate ligament, Tear of meniscus of knee |
 | 126906006 | Neoplasm of prostate (disorder) | 31 | 31 | 100.0% | Carcinoma in situ of prostate, Metastatic malignant neoplasm to prostate |
+| 262574004 | Bullet wound (disorder) | 6 | 6 | 100.0% | Gunshot wound |
 | 48333001 | Burn injury (morphologic abnormality) | 112 | 116 | 99.1% | Epidermal burn of skin, Partial thickness burn, Full thickness burn |
 | 110030002 | Concussion injury of brain (disorder) | 201 | 210 | 95.7% | Concussion with no loss of consciousness, Concussion with loss of consciousness |
 
@@ -41,8 +42,6 @@ These also meet the rule but are kept, as they are not general forms of the code
 | 128188000 | Cerebral palsy (disorder) | 9 | 9 | 100.0% | Gastroesophageal reflux disease, Intellectual disability, Excessive salivation, Dystonia, Dislocation of hip joint |
 | 235919008 | Gallbladder calculus (disorder) | 8 | 8 | 100.0% | Acute cholecystitis |
 | 65275009 | Acute cholecystitis (disorder) | 8 | 8 | 100.0% | Gallbladder calculus |
-| 262574004 | Bullet wound (disorder) | 6 | 6 | 100.0% | Gunshot wound |
-| 283545005 | Gunshot wound (disorder) | 6 | 6 | 100.0% | Bullet wound |
 | 234466008 | Acquired coagulation disorder (disorder) | 2 | 2 | 100.0% | Injury of kidney, Heart failure, Injury of heart, Bacterial infectious disease |
 | 40095003 | Injury of kidney (disorder) | 2 | 2 | 100.0% | Acquired coagulation disorder, Heart failure, Injury of heart, Bacterial infectious disease |
 | 1734006 | Fracture of vertebral column with spinal cord injury (disorder) | 1 | 1 | 100.0% | Traumatic injury of spinal cord and/or vertebral column, Chronic paralysis due to lesion of spinal cord |
@@ -59,19 +58,19 @@ These also meet the rule but are kept, as they are not general forms of the code
 
 ## Feature matrices per window
 
-Each matrix has 205 code columns (time-decayed TF-IDF) and 32 transition columns. Transitions counts those in the window's cumulative block. Windows after the cutoff contain post-cutoff events; models read features only through `load_model_inputs`, which never returns them.
+Each matrix has 204 code columns (time-decayed TF-IDF) and 32 transition columns. Transitions counts those in the window's cumulative block. Windows after the cutoff contain post-cutoff events; models read features only through `load_model_inputs`, which never returns them.
 
 | Year | Use | Shape | Non-zeros | Density | Code-block density | Transitions | Patients with transitions | All-zero rows |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2017 | model input | 2,646 x 237 | 67,031 | 10.7% | 2.0% | 11,166 | 1,749 | 485 |
-| 2018 | model input | 2,646 x 237 | 76,733 | 12.2% | 2.4% | 13,199 | 1,991 | 326 |
-| 2019 | model input | 2,646 x 237 | 84,749 | 13.5% | 2.7% | 15,014 | 2,186 | 219 |
-| 2020 | model input | 2,646 x 237 | 91,235 | 14.5% | 3.1% | 17,133 | 2,327 | 149 |
-| 2021 | model input | 2,646 x 237 | 95,945 | 15.3% | 3.4% | 19,115 | 2,418 | 99 |
-| 2022 | model input | 2,646 x 237 | 99,634 | 15.9% | 3.7% | 20,829 | 2,484 | 65 |
-| 2023 | label period only | 2,646 x 237 | 101,188 | 16.1% | 4.0% | 20,829 | 2,484 | 30 |
-| 2024 | label period only | 2,646 x 237 | 102,632 | 16.4% | 4.3% | 20,829 | 2,484 | 19 |
-| 2025 | label period only | 2,646 x 237 | 104,093 | 16.6% | 4.5% | 20,829 | 2,484 | 0 |
+| 2017 | model input | 2,646 x 236 | 67,030 | 10.7% | 2.0% | 11,165 | 1,749 | 485 |
+| 2018 | model input | 2,646 x 236 | 76,732 | 12.3% | 2.4% | 13,198 | 1,991 | 326 |
+| 2019 | model input | 2,646 x 236 | 84,748 | 13.6% | 2.7% | 15,013 | 2,186 | 219 |
+| 2020 | model input | 2,646 x 236 | 91,234 | 14.6% | 3.1% | 17,132 | 2,327 | 149 |
+| 2021 | model input | 2,646 x 236 | 95,943 | 15.4% | 3.4% | 19,112 | 2,418 | 99 |
+| 2022 | model input | 2,646 x 236 | 99,629 | 16.0% | 3.7% | 20,821 | 2,484 | 65 |
+| 2023 | label period only | 2,646 x 236 | 101,183 | 16.2% | 4.0% | 20,821 | 2,484 | 30 |
+| 2024 | label period only | 2,646 x 236 | 102,627 | 16.4% | 4.3% | 20,821 | 2,484 | 19 |
+| 2025 | label period only | 2,646 x 236 | 104,087 | 16.7% | 4.6% | 20,821 | 2,484 | 0 |
 
 ## Model cohort
 

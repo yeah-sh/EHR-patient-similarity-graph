@@ -21,6 +21,7 @@ from ehrgraph.features import (
     build_chronic_comorbidity,
     build_comorbidity,
     build_features,
+    chronic_presence,
     co_recorded_codes,
     comorbidity_counts,
     comorbidity_lift,
@@ -301,6 +302,20 @@ def test_chronic_comorbidity_counts_patients_not_patient_years(cfg: Config) -> N
     assert top[["code_a", "code_b", "count"]].values.tolist() == [["c1", "c2", 2]]
     assert top["lift"].iloc[0] == pytest.approx(2 * 4 / (2 * 3))
     assert top["jaccard"].iloc[0] == pytest.approx(2 / (2 + 3 - 2))
+
+
+def test_chronic_presence_flags_each_patients_chronic_conditions(cfg: Config) -> None:
+    presence, codes = chronic_presence(_trajectories(), cfg)
+    assert codes == CODES
+    assert presence.toarray().tolist() == [
+        [1, 1, 0],  # p1
+        [1, 1, 0],  # p2: c1 chronic by duration
+        [0, 1, 0],  # p3: c1 is acute
+        [0, 0, 1],  # p4: c2 starts after the training period
+    ]
+    # Column sums are the diagonal of the chronic comorbidity counts.
+    chronic = build_chronic_comorbidity(_trajectories(), cfg)
+    np.testing.assert_array_equal(np.asarray(presence.sum(axis=0)).ravel(), chronic.counts.diagonal())
 
 
 def test_chronic_comorbidity_leaves_out_redundant_codes(cfg: Config) -> None:
