@@ -135,7 +135,9 @@ def cfg(tmp_path: Path) -> Config:
             labels_parquet=tmp_path / "labels.parquet",
             splits_json=tmp_path / "splits.json",
         ),
-        labels=replace(base.labels, onset_groups=GROUPS, borderline_groups=()),
+        labels=replace(
+            base.labels, onset_groups=GROUPS, borderline_groups=(), near_threshold_groups=()
+        ),
     )
 
 

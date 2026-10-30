@@ -454,6 +454,15 @@ def write_labels_summary(
             ]
         )
 
+    near = [
+        f"`{group}` ({status_count(ONSET_PREFIX + group, POSITIVE):,} onsets)"
+        for group in labels_cfg.near_threshold_groups
+    ]
+    near_note = (
+        [f"{', '.join(near)} {'is' if len(near) == 1 else 'are'} also near the threshold."]
+        if near else []
+    )
+
     pooled = label_summary(labels, [ANY_ONSET]).iloc[0]
     positive = (labels[ANY_ONSET] == 1).to_numpy()
     multi = int(((labels[onsets].to_numpy(dtype=float) == 1).sum(axis=1)[positive] > 1).sum())
@@ -550,6 +559,7 @@ def write_labels_summary(
         "Groups in `labels.borderline_groups` are kept but flagged **borderline**: they have "
         f"few new onsets for a review threshold of {labels_cfg.min_onsets}, so their metrics "
         "will be noisy.",
+        *near_note,
         "",
         f"## Primary target: {ANY_ONSET}",
         "",

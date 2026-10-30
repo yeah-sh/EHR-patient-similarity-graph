@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import date
 from pathlib import Path
 from types import MappingProxyType
@@ -65,6 +65,22 @@ class PathsConfig:
     labels_parquet: Path
     splits_json: Path
     labels_summary_md: Path
+    model_pt: Path
+    config_used_yaml: Path
+    train_log_csv: Path
+    train_metrics_json: Path
+    embeddings_per_window_npy: Path
+    trajectory_embeddings_npy: Path
+    training_curves_fig: Path
+    training_summary_md: Path
+    temperature_json: Path
+    reliability_fig: Path
+    quick_dir: Path
+    baseline_results_csv: Path
+    baselines_summary_md: Path
+    baseline_val_scores_csv: Path
+    tuning_results_csv: Path
+    tuning_summary_md: Path
 
 
 @dataclass(frozen=True)
@@ -132,7 +148,8 @@ class LabelsConfig:
     """Prediction targets and the leakage cutoff; see ``labels``.
 
     ``onset_groups`` maps a group name to its codes (read-only, in config order);
-    ``borderline_groups`` names onset groups the report flags as borderline.
+    ``borderline_groups`` names onset groups the report flags as borderline, and
+    ``near_threshold_groups`` those it notes as also close to ``min_onsets``.
     """
 
     cutoff_date: date
@@ -140,12 +157,13 @@ class LabelsConfig:
     min_last_encounter_date: date
     min_onsets: int
     borderline_groups: tuple[str, ...]
+    near_threshold_groups: tuple[str, ...]
     onset_groups: Mapping[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Temporal GCN architecture and optimiser settings."""
+    """Temporal GCN architecture, optimiser and training settings; see ``train.fit``."""
 
     hidden_dim: int
     embed_dim: int
@@ -153,6 +171,70 @@ class ModelConfig:
     lr: float
     weight_decay: float
     epochs: int
+    patience: int
+    grad_clip_norm: float
+    secondary_weight: float
+    smoothness_weight: float
+    drop_edge: float
+    use_demographics: bool
+    log_every_epochs: int
+    quick_epochs: int
+    quick_patients: int
+
+
+@dataclass(frozen=True)
+class ReferenceModelConfig:
+    """The Phase 6 model setting, retrained as the baselines' reference row.
+
+    Its fields replace the same fields of ``ModelConfig`` (``reference_model_config``).
+    """
+
+    hidden_dim: int
+    embed_dim: int
+    dropout: float
+    weight_decay: float
+    smoothness_weight: float
+    drop_edge: float
+    use_demographics: bool
+
+
+@dataclass(frozen=True)
+class BaselinesConfig:
+    """Logistic-regression baselines; see ``evaluate.run_baselines``."""
+
+    C: float
+    max_iter: int
+    balanced_class_weight: bool
+    reference_model: ReferenceModelConfig
+
+
+@dataclass(frozen=True)
+class TuningConfig:
+    """Validation-only hyperparameter grid; see ``train.tuning_settings``.
+
+    ``dims`` holds (hidden_dim, embed_dim) pairs.
+    """
+
+    seeds: tuple[int, ...]
+    weight_decay: tuple[float, ...]
+    dropout: tuple[float, ...]
+    dims: tuple[tuple[int, int], ...]
+    smoothness_weight: tuple[float, ...]
+    drop_edge: tuple[float, ...]
+    max_settings: int
+    tie_tolerance: float
+    top_n_report: int
+
+
+@dataclass(frozen=True)
+class EvaluationConfig:
+    """Bootstrap confidence intervals and calibration; see ``evaluate``."""
+
+    bootstrap_resamples: int
+    ci_level: float
+    calibration_bins: int
+    calibration_cv_folds: int
+    temperature_bounds: tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -195,6 +277,9 @@ class Config:
     graph: GraphConfig
     labels: LabelsConfig
     model: ModelConfig
+    baselines: BaselinesConfig
+    tuning: TuningConfig
+    evaluation: EvaluationConfig
     split: SplitConfig
     summary: SummaryConfig
 
@@ -268,6 +353,11 @@ def _coerce(value: Any, hint: Any, where: str) -> Any:
             return date.fromisoformat(value)
         raise ValueError(f"{where}: expected an ISO date (YYYY-MM-DD), got {value!r}")
 
+    if hint is bool:
+        if not isinstance(value, bool):
+            raise ValueError(f"{where}: expected true or false, got {value!r}")
+        return value
+
     if hint is float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(
@@ -322,9 +412,57 @@ def _validate(config: Config) -> None:
         raise ValueError(f"labels.onset_groups: codes in more than one group: {shared}")
     if not labels.onset_groups:
         raise ValueError("labels.onset_groups must name at least one group")
-    unknown = sorted(set(labels.borderline_groups) - set(labels.onset_groups))
-    if unknown:
-        raise ValueError(f"labels.borderline_groups: not onset groups: {unknown}")
+    for name in ("borderline_groups", "near_threshold_groups"):
+        unknown = sorted(set(getattr(labels, name)) - set(labels.onset_groups))
+        if unknown:
+            raise ValueError(f"labels.{name}: not onset groups: {unknown}")
+
+    model = config.model
+    if not 0.0 <= model.dropout < 1.0:
+        raise ValueError(f"model.dropout must lie in [0, 1), got {model.dropout}")
+    positive = ("hidden_dim", "embed_dim", "epochs", "patience", "log_every_epochs",
+                "quick_epochs", "quick_patients", "lr", "grad_clip_norm")
+    bad = [name for name in positive if getattr(model, name) <= 0]
+    if bad:
+        raise ValueError(f"model: these values must be positive: {bad}")
+    negative = [n for n in ("weight_decay", "secondary_weight", "smoothness_weight")
+                if getattr(model, n) < 0]
+    if negative:
+        raise ValueError(f"model: these values must not be negative: {negative}")
+    if not 0.0 <= model.drop_edge < 1.0:
+        raise ValueError(f"model.drop_edge must lie in [0, 1), got {model.drop_edge}")
+
+    baselines = config.baselines
+    if baselines.C <= 0 or baselines.max_iter <= 0:
+        raise ValueError("baselines.C and baselines.max_iter must be positive")
+    _validate_model_values(asdict(baselines.reference_model), "baselines.reference_model")
+
+    tuning = config.tuning
+    lists = ("seeds", "weight_decay", "dropout", "dims", "smoothness_weight", "drop_edge")
+    empty = [name for name in lists if not getattr(tuning, name)]
+    if empty:
+        raise ValueError(f"tuning: these lists must not be empty: {empty}")
+    for i, (hidden_dim, embed_dim) in enumerate(tuning.dims):
+        _validate_model_values({"hidden_dim": hidden_dim, "embed_dim": embed_dim},
+                               f"tuning.dims[{i}]")
+    for name in ("weight_decay", "dropout", "smoothness_weight", "drop_edge"):
+        for value in getattr(tuning, name):
+            _validate_model_values({name: value}, f"tuning.{name}")
+    if tuning.max_settings < 1 or tuning.top_n_report < 1 or tuning.tie_tolerance < 0:
+        raise ValueError(
+            "tuning: max_settings and top_n_report must be positive and tie_tolerance >= 0"
+        )
+
+    evaluation = config.evaluation
+    if evaluation.bootstrap_resamples < 1 or not 0.0 < evaluation.ci_level < 1.0:
+        raise ValueError("evaluation: bootstrap_resamples must be >= 1 and ci_level in (0, 1)")
+    if evaluation.calibration_bins < 2 or evaluation.calibration_cv_folds < 2:
+        raise ValueError("evaluation: calibration_bins and calibration_cv_folds must be >= 2")
+    low, high = evaluation.temperature_bounds
+    if not 0 < low < 1 < high:
+        raise ValueError(
+            f"evaluation.temperature_bounds must satisfy 0 < low < 1 < high, got {(low, high)}"
+        )
 
     # A canonical code that is itself merged would make the result depend on order.
     code_merge = config.data.code_merge
@@ -334,6 +472,21 @@ def _validate(config: Config) -> None:
             f"data.code_merge: these codes map to a code that is itself merged (or to "
             f"themselves): {chained}"
         )
+
+
+def _validate_model_values(values: Mapping[str, Any], where: str) -> None:
+    """Check model settings given outside the ``model`` section (reference, tuning grid)."""
+    if any(not 0.0 <= values.get(name, 0.0) < 1.0 for name in ("dropout", "drop_edge")):
+        raise ValueError(f"{where}: dropout and drop_edge must lie in [0, 1)")
+    if any(values.get(name, 1) <= 0 for name in ("hidden_dim", "embed_dim")):
+        raise ValueError(f"{where}: hidden_dim and embed_dim must be positive")
+    if any(values.get(name, 0.0) < 0 for name in ("weight_decay", "smoothness_weight")):
+        raise ValueError(f"{where}: weight_decay and smoothness_weight must not be negative")
+
+
+def reference_model_config(config: Config) -> ModelConfig:
+    """Return ``config.model`` with the fields of ``baselines.reference_model`` replaced."""
+    return replace(config.model, **asdict(config.baselines.reference_model))
 
 
 def horizon_end(config: Config) -> date:

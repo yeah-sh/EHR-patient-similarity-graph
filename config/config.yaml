@@ -53,6 +53,29 @@ paths:
   labels_parquet: data/processed/labels.parquet
   splits_json: data/processed/splits.json
   labels_summary_md: reports/labels_summary.md
+  # Phase 6 outputs (train.save_training). Embedding rows follow model_cohort.json.
+  model_pt: artifacts/model.pt
+  config_used_yaml: artifacts/config_used.yaml
+  train_log_csv: artifacts/train_log.csv
+  train_metrics_json: artifacts/train_metrics.json
+  embeddings_per_window_npy: artifacts/embeddings_per_window.npy
+  trajectory_embeddings_npy: artifacts/trajectory_embeddings.npy
+  training_curves_fig: reports/figures/training_curves.png
+  training_summary_md: reports/training_summary.md
+  # Temperature scaling of the any_onset logits, fitted on validation (06_train.py).
+  temperature_json: artifacts/temperature.json
+  reliability_fig: reports/figures/reliability_any_onset.png
+  # scripts/06_train.py --quick writes every Phase 6 output here instead, under the
+  # same file names, so a smoke test never overwrites the real model.
+  quick_dir: artifacts/quick
+  # Phase 6b: validation-only baselines (06a_baselines.py) and tuning (06b_tune.py).
+  baseline_results_csv: reports/baseline_results.csv
+  baselines_summary_md: reports/baselines_summary.md
+  # Validation patients' any_onset label and each baseline's score, so 06_train.py can
+  # compare the final model with the baselines on the same bootstrap resamples.
+  baseline_val_scores_csv: artifacts/baseline_val_scores.csv
+  tuning_results_csv: reports/tuning_results.csv
+  tuning_summary_md: reports/tuning_summary.md
 
 # Global random seed used by random, numpy and torch.
 seed: 42
@@ -206,6 +229,8 @@ labels:
   min_onsets: 30
   # Kept groups just above min_onsets; flagged as borderline in the report.
   borderline_groups: [ckd, metabolic_syndrome]
+  # Kept groups not flagged borderline but also close to min_onsets; the report notes them.
+  near_threshold_groups: [chronic_pain]
   # Onset labels (labels.build_labels): a group's onset is the first event of any of its
   # codes. Masked if it was before the cutoff; 1 if it is in the horizon; else 0. These
   # are the secondary targets; the primary target any_onset pools them (labels.ANY_ONSET).
@@ -256,14 +281,103 @@ labels:
       - "10939881000119105"  # Unhealthy alcohol drinking behavior (finding)
       - "1149222004"  # Overdose (the only overdose code in the data)
 
+# Temporal GCN (models.OnsetModel) and its full-batch training (train.fit).
 model:
+  # hidden_dim, embed_dim, dropout, weight_decay, smoothness_weight and drop_edge are the
+  # setting chosen by scripts/06b_tune.py (setting 25 of reports/tuning_summary.md: best
+  # mean validation AUROC of any_onset over seeds 42-44, 0.6769 +/- 0.0074). The Phase 6
+  # values are kept in baselines.reference_model.
+  # GCN widths: features -> hidden_dim -> embed_dim per window, weights shared across
+  # windows. The GRU over the windows also has embed_dim units, so the per-window and
+  # trajectory embeddings share a width.
   hidden_dim: 64
   embed_dim: 32
-  dropout: 0.5
+  # Dropout between the two GCN layers.
+  dropout: 0.6
   lr: 0.01
-  # Written as 5.0e-4 (not 5e-4): PyYAML reads 5e-4 as a string.
-  weight_decay: 5.0e-4
+  # Written as 5.0e-3 (not 5e-3): PyYAML reads 5e-3 as a string.
+  weight_decay: 5.0e-3
   epochs: 200
+  # Early stopping: stop after this many epochs without a higher validation AUROC of
+  # any_onset; the weights of the best epoch are kept.
+  patience: 20
+  # Max L2 norm of all gradients together (torch.nn.utils.clip_grad_norm_).
+  grad_clip_norm: 1.0
+  # Loss = BCE(any_onset) + secondary_weight * masked BCE(onset groups).
+  secondary_weight: 0.5
+  # Weight of the auxiliary graph-smoothness loss, the mean over windows of
+  # trace(Z^T L Z) / trace(Z^T Z) (models.graph_smoothness). 0 turns it off.
+  smoothness_weight: 0.0
+  # DropEdge: each training epoch, drop this fraction of every window's (undirected)
+  # edges at random and renormalize A_hat (models.EdgeDropper). Evaluation always
+  # uses the full graphs. 0 turns it off.
+  drop_edge: 0.0
+  # Concatenate age at labels.cutoff_date (standardized with training-split statistics)
+  # and sex (1 = male, 0 = female) to the trajectory embedding before the heads. They
+  # never enter the graphs or the node features.
+  use_demographics: true
+  # Log a progress line every this many epochs (and at each new best).
+  log_every_epochs: 10
+  # scripts/06_train.py --quick: this many epochs on this many patients (drawn with the
+  # global seed; the graph is the induced subgraph, renormalized).
+  quick_epochs: 5
+  quick_patients: 300
+
+# Validation-only baselines for any_onset (evaluate.run_baselines, scripts/06a_baselines.py):
+# logistic regression on the 2022 window, or on every training window concatenated,
+# each without and with age and sex; same split and masked labels as the GCN.
+baselines:
+  # sklearn LogisticRegression: L2 penalty with this inverse strength, lbfgs.
+  C: 1.0
+  max_iter: 5000
+  # Weight classes inversely to their training frequency, like the GCN's pos_weight.
+  balanced_class_weight: true
+  # The Phase 6 TemporalGCN setting, retrained (seed 42) as the reference row, with
+  # and without demographics. Its validation AUROC was 0.679.
+  reference_model:
+    hidden_dim: 64
+    embed_dim: 32
+    dropout: 0.5
+    weight_decay: 5.0e-4
+    smoothness_weight: 0.0
+    drop_edge: 0.0
+    use_demographics: false
+
+# Hyperparameter search on validation only (train.tuning_settings, scripts/06b_tune.py).
+# Every combination of the lists below, each trained once per seed, with model.lr and
+# model.patience (early stopping on validation AUROC of any_onset) and every other
+# model value from the model section. Ranked by mean validation AUROC of any_onset.
+tuning:
+  seeds: [42, 43, 44]
+  weight_decay: [5.0e-4, 5.0e-3, 1.0e-2]
+  dropout: [0.5, 0.6]
+  # (hidden_dim, embed_dim) pairs.
+  dims: [[64, 32], [32, 16]]
+  smoothness_weight: [0.0, 0.1]
+  drop_edge: [0.0, 0.2]
+  # Run at most this many settings: a random subset (drawn with the global seed) when
+  # the grid is larger.
+  max_settings: 48
+  # Settings whose mean AUROC is within this of the best count as tied; the simplest
+  # of them wins (train.select_setting): fewest of smoothness and DropEdge switched on,
+  # then the smaller model, then the higher mean AUROC.
+  tie_tolerance: 0.005
+  # Settings listed in reports/tuning_summary.md.
+  top_n_report: 5
+
+# Validation metrics (evaluate): bootstrap CIs and calibration.
+evaluation:
+  # Percentile bootstrap over validation patients, drawn with the global seed.
+  bootstrap_resamples: 1000
+  ci_level: 0.95
+  # Reliability diagram and expected calibration error: equal-count bins.
+  calibration_bins: 10
+  # Out-of-sample check of temperature scaling: refit on k - 1 stratified folds of the
+  # validation patients and score the held-out fold.
+  calibration_cv_folds: 5
+  # Search range of the temperature. Logits that barely rank (e.g. a small fold) can
+  # push the fit to T -> infinity (every probability 0.5); a fit at a bound is logged.
+  temperature_bounds: [0.01, 100.0]
 
 # Patient-level split of the model cohort (labels.stratified_split), stratified by
 # Phase 4 phenotype cluster x any_onset label (masked is its own value), drawn with the

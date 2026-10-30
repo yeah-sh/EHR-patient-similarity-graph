@@ -59,7 +59,7 @@ from sklearn.feature_extraction.text import TfidfTransformer
 from sklearn.preprocessing import normalize
 
 from ehrgraph.config import Config, feature_window_years
-from ehrgraph.data import chart_style, markdown_table, save_figure
+from ehrgraph.data import DAYS_PER_YEAR, chart_style, markdown_table, save_figure
 from ehrgraph.trajectories import (
     Trajectories,
     TrajectoryWindows,
@@ -76,6 +76,9 @@ TOP_PAIR_COLUMNS: list[str] = [
     "frequency_a", "frequency_b", "count", "expected", "lift", "jaccard",
 ]
 CO_RECORDED_COLUMNS: list[str] = ["code", "patients", "encounters", "coverage", "specific_codes"]
+# Patient-level model inputs outside the graph (patient_demographics), in column order.
+DEMOGRAPHICS: tuple[str, ...] = ("age", "sex")
+SEX_CODES: dict[str, float] = {"F": 0.0, "M": 1.0}  # patients.GENDER -> sex input
 
 # Diverging pair from the dataviz reference palette: blue (less often together than
 # expected) and red (more often) arms with equal steps, around a neutral gray at lift 1.
@@ -1055,6 +1058,46 @@ def load_model_inputs(cfg: Config) -> ModelInputs:
     rows = np.asarray(cohort["rows"], dtype=np.int64)
     matrices = [sp.load_npz(feature_path(cfg, year)).tocsr()[rows] for year in years]
     return ModelInputs(years, tuple(cohort["patient_ids"]), rows, matrices)
+
+
+def patient_demographics(
+    patients: pd.DataFrame, patient_ids: Sequence[str], as_of: date
+) -> pd.DataFrame:
+    """Return each patient's age on ``as_of`` and sex: model inputs outside the graph.
+
+    Age is ``(as_of - birth_date)`` in years of ``data.DAYS_PER_YEAR`` days, unrounded,
+    for every patient: a death date is never read, so the age of a patient who dies
+    after ``as_of`` reveals nothing later. Pass the prediction cutoff as ``as_of``.
+
+    Args:
+        patients: ``data.load_patients`` output (patient_id, birth_date, gender).
+        patient_ids: Patients to return, in order.
+        as_of: Reference date, normally ``labels.cutoff_date``.
+
+    Returns:
+        Columns ``DEMOGRAPHICS``: age (float years) and sex (``SEX_CODES``),
+        indexed by patient_id in ``patient_ids`` order.
+
+    Raises:
+        ValueError: If a patient is missing, born after ``as_of`` or has a gender
+            outside ``SEX_CODES``.
+    """
+    table = patients.set_index("patient_id").reindex(pd.Index(patient_ids, name="patient_id"))
+    missing = table["birth_date"].isna()
+    if missing.any():
+        raise ValueError(f"{int(missing.sum())} patients have no birth date or patient row")
+    days = (pd.Timestamp(as_of.isoformat(), tz="UTC") - table["birth_date"]).dt.days
+    if (days < 0).any():
+        raise ValueError(f"{int((days < 0).sum())} patients are born after {as_of}")
+    sex = table["gender"].map(SEX_CODES)
+    if sex.isna().any():
+        unknown = sorted(table["gender"][sex.isna()].astype(str).unique())
+        raise ValueError(f"genders outside {sorted(SEX_CODES)}: {unknown}")
+    return pd.DataFrame(
+        {"age": (days / DAYS_PER_YEAR).astype(float).to_numpy(),
+         "sex": sex.astype(float).to_numpy()},
+        index=table.index,
+    )[list(DEMOGRAPHICS)]
 
 
 def load_model_cohort(cfg: Config) -> tuple[tuple[str, ...], np.ndarray]:

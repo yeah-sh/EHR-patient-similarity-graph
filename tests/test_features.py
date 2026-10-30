@@ -29,6 +29,7 @@ from ehrgraph.features import (
     feature_transitions,
     feature_vocabulary,
     load_model_inputs,
+    patient_demographics,
     patient_transition_matrix,
     plot_comorbidity_heatmap,
     save_features,
@@ -527,6 +528,53 @@ def test_model_inputs_reject_features_built_for_another_cutoff(cfg: Config) -> N
 
 
 # --- Saving and the report ---------------------------------------------------------
+
+
+def _patients() -> pd.DataFrame:
+    """Three patients; b dies after the 2023-01-01 cutoff, c is born just before it."""
+    def day(text: str | None) -> pd.Timestamp:
+        return pd.Timestamp(text, tz="UTC") if text else pd.NaT
+
+    return pd.DataFrame(
+        {
+            "patient_id": pd.array(["a", "b", "c"], dtype="string"),
+            "birth_date": pd.Series([day("2000-01-01"), day("1950-07-01"), day("2022-12-31")],
+                                    dtype=DATE_DTYPE),
+            "death_date": pd.Series([day(None), day("2024-06-01"), day(None)], dtype=DATE_DTYPE),
+            "gender": pd.array(["F", "M", "F"], dtype="string"),
+        }
+    )
+
+
+def test_age_is_computed_at_the_cutoff_not_later() -> None:
+    cutoff = date(2023, 1, 1)
+    demographics = patient_demographics(_patients(), ["b", "a", "c"], cutoff)
+    assert demographics.index.tolist() == ["b", "a", "c"]
+    assert list(demographics.columns) == ["age", "sex"]
+    expected = [
+        (cutoff - date(1950, 7, 1)).days / 365.25,  # not at death (2024-06-01)
+        (cutoff - date(2000, 1, 1)).days / 365.25,
+        1 / 365.25,
+    ]
+    np.testing.assert_allclose(demographics["age"], expected)
+    np.testing.assert_array_equal(demographics["sex"], [1.0, 0.0, 0.0])
+    # The age moves with the reference date, so it is the cutoff's age, not today's.
+    later = patient_demographics(_patients(), ["b", "a", "c"], date(2024, 1, 1))
+    np.testing.assert_allclose(later["age"] - demographics["age"], 365 / 365.25)
+    # A death after the cutoff is never read.
+    alive = _patients().assign(death_date=pd.Series([pd.NaT] * 3, dtype=DATE_DTYPE))
+    pd.testing.assert_frame_equal(patient_demographics(alive, ["b", "a", "c"], cutoff),
+                                  demographics)
+
+
+def test_demographics_reject_bad_patients() -> None:
+    with pytest.raises(ValueError, match="born after"):
+        patient_demographics(_patients(), ["c"], date(2022, 6, 1))
+    with pytest.raises(ValueError, match="no birth date"):
+        patient_demographics(_patients(), ["a", "zz"], date(2023, 1, 1))
+    other = _patients().assign(gender=pd.array(["F", "M", "U"], dtype="string"))
+    with pytest.raises(ValueError, match="genders"):
+        patient_demographics(other, ["c"], date(2023, 1, 1))
 
 
 def test_save_report_and_heatmap(cfg: Config) -> None:

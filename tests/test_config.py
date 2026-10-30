@@ -16,6 +16,7 @@ from ehrgraph.config import (
     feature_window_years,
     horizon_end,
     load_config,
+    reference_model_config,
 )
 
 
@@ -40,7 +41,7 @@ def test_seed_is_42() -> None:
 def test_values_are_typed() -> None:
     config = load_config()
     assert isinstance(config.model.weight_decay, float)
-    assert config.model.weight_decay == pytest.approx(5e-4)
+    assert config.model.weight_decay == pytest.approx(5e-3)  # tuned in Phase 6b
     assert config.graph.k == 10
     assert config.paths.raw_dir == (PROJECT_ROOT / "data" / "raw").resolve()
 
@@ -151,6 +152,40 @@ def test_borderline_groups_must_be_onset_groups(tmp_path: Path) -> None:
 def test_follow_up_date_must_fall_in_the_horizon(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="min_last_encounter_date"):
         load_config(_write_variant(tmp_path, "labels", "min_last_encounter_date", "2026-06-01"))
+
+
+def test_phase_6b_settings_are_typed() -> None:
+    config = load_config()
+    assert config.model.use_demographics is True
+    assert isinstance(config.model.drop_edge, float)
+    tuning = config.tuning
+    assert tuning.seeds == (42, 43, 44)
+    assert tuning.dims == ((64, 32), (32, 16))
+    assert tuning.weight_decay == pytest.approx((5e-4, 5e-3, 1e-2))
+    reference = reference_model_config(config)
+    assert (reference.hidden_dim, reference.embed_dim, reference.dropout) == (64, 32, 0.5)
+    assert reference.use_demographics is False and reference.lr == config.model.lr
+    assert config.evaluation.bootstrap_resamples == 1000
+    assert config.evaluation.ci_level == pytest.approx(0.95)
+
+
+def test_use_demographics_must_be_a_boolean(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="use_demographics: expected true or false"):
+        load_config(_write_variant(tmp_path, "model", "use_demographics", 1))
+
+
+@pytest.mark.parametrize(("section", "key", "value", "match"), [
+    ("model", "drop_edge", 1.0, "drop_edge"),
+    ("tuning", "drop_edge", [0.0, 1.5], "tuning.drop_edge"),
+    ("tuning", "seeds", [], "must not be empty"),
+    ("evaluation", "ci_level", 1.0, "ci_level"),
+    ("evaluation", "temperature_bounds", [2.0, 100.0], "temperature_bounds"),
+])
+def test_phase_6b_values_are_validated(
+    tmp_path: Path, section: str, key: str, value: object, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        load_config(_write_variant(tmp_path, section, key, value))
 
 
 def test_project_cutoff_splits_feature_and_label_windows() -> None:

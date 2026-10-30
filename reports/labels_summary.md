@@ -37,6 +37,7 @@ A group's onset is its first event, of any of its codes. Precedence: died before
 | substance_use | 532 | 109 | 1,611 | 6.3% | 143 (7) | 23 | 77 | 86 | keep |
 
 Groups in `labels.borderline_groups` are kept but flagged **borderline**: they have few new onsets for a review threshold of 30, so their metrics will be noisy.
+`chronic_pain` (34 onsets) is also near the threshold.
 
 ## Primary target: any_onset
 
