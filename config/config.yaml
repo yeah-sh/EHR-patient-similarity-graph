@@ -11,18 +11,78 @@ paths:
   patients_csv: data/raw/patients.csv
   conditions_csv: data/raw/conditions.csv
   encounters_csv: data/raw/encounters.csv
+  events_parquet: data/processed/events.parquet
+  events_clinical_parquet: data/processed/events_clinical.parquet
+  code_dictionary_csv: data/processed/code_dictionary.csv
+  data_summary_md: reports/data_summary.md
+  clinical_summary_md: reports/clinical_summary.md
+  events_per_patient_fig: reports/figures/events_per_patient_hist.png
+  top_conditions_fig: reports/figures/top_conditions_bar.png
 
 # Global random seed used by random, numpy and torch.
 seed: 42
 
 data:
   min_conditions_per_patient: 2
+  # Codes that record one concept under two codes (data.merge_codes), as
+  # {old_code: canonical_code}. Applied before code_filter, so a merged code is
+  # judged on the descriptions of both. Canonical codes must not be merged again.
+  code_merge:
+    # Prediabetes (older Synthea) -> Prediabetes (finding). The current single-version
+    # data has no 15777000; merge_codes only warns, so the rule is kept for older exports.
+    "15777000": "714628002"
+  # Which condition codes are clinical (data.filter_clinical_events). A code is kept
+  # if ANY of its descriptions ends with a keep_suffix or equals a keep_description,
+  # both compared case-insensitively; every other code (social, administrative,
+  # symptoms, most history-of, ...) is dropped. Any wording counts because Synthea
+  # versions differ: "Stroke" and "Cerebrovascular accident (disorder)" share a code.
+  code_filter:
+    keep_suffixes: ["(disorder)"]
+    keep_descriptions:
+      # Metabolic findings
+      - Prediabetes (finding)
+      - Prediabetes  # older wording of 15777000, which code_merge folds into 714628002
+      - Body mass index 30+ - obesity (finding)
+      - Body mass index 40+ - severely obese (finding)
+      - Hypertension  # older wording; the code is also kept by "(disorder)"
+      - Hyperlipidemia  # older wording; the code is also kept by "(disorder)"
+      # Chronic pain and mental health
+      - Chronic pain (finding)
+      - Chronic low back pain (finding)
+      - Chronic neck pain (finding)
+      - Severe anxiety (panic) (finding)
+      # Infection and injuries tagged other than "(disorder)"
+      - Bacteremia (finding)
+      - Sprain (morphologic abnormality)
+      - Burn injury (morphologic abnormality)
+      # Disorders recorded only in an older, untagged wording
+      - Coronary Heart Disease
+      - Cardiac Arrest
+      - Drug overdose
+      - Escherichia coli urinary tract infection
+      - Cystitis
+      - Gout
+      - Brain damage - traumatic
+      - Chronic paralysis due to lesion of spinal cord
+      - Cystic Fibrosis
+      - Infection caused by Pseudomonas aeruginosa
+      - Male Infertility
+      # Substance use. Alcoholism, Dependent drug abuse and Opioid abuse are
+      # already kept by "(disorder)".
+      - Smokes tobacco daily (finding)
+      - Unhealthy alcohol drinking behavior (finding)  # matches two codes
+      - Misuses drugs (finding)
+      # History of major cardiac events (no cerebrovascular history codes in the data)
+      - History of myocardial infarction (situation)
+      - History of coronary artery bypass grafting (situation)
+      - History of cardiac arrest (situation)
+      - History of aortic valve replacement (situation)
 
 trajectories:
   window: yearly
-  # Placeholder range: revisit once the Synthea date range has been inspected.
-  start_year: 2010
-  end_year: 2020
+  # Condition events run to 2026-10-30, so 2026 is a partial year and 2025 is the last full window.
+  start_year: 2000
+  end_year: 2025
 
 features:
   tfidf_ngram_range: [1, 2]
@@ -35,11 +95,13 @@ graph:
 
 labels:
   # Prediction cutoff: features use only events strictly before this date.
-  # Must be after the last trajectory window (end_year) to avoid leakage.
-  cutoff_date: 2021-01-01
+  # Trajectories may run past it; only windows that close on or before the cutoff
+  # are used as features, and later windows are used for labels only.
+  # 2023-01-01 gives feature windows 2000-2022 and label windows 2023-2025.
+  cutoff_date: 2023-01-01
   # A patient is positive if a target condition first appears within this many
   # years after the cutoff.
-  horizon_years: 2
+  horizon_years: 3
   # SNOMED-CT codes defining the outcome; to be chosen when labels.py is built.
   target_codes: []
 
@@ -56,3 +118,13 @@ split:
   train: 0.7
   val: 0.15
   test: 0.15
+
+# reports/data_summary.md, reports/clinical_summary.md and their figures.
+summary:
+  top_n_conditions: 20
+  # Age-group edges in completed years, left-closed; .inf leaves the last group open.
+  age_bins: [0, 18, 30, 45, 65, 80, .inf]
+  events_hist_bins: 40
+  figure_dpi: 150
+  # Years with fewer patients with an active clinical condition are flagged.
+  min_active_patients_per_year: 500

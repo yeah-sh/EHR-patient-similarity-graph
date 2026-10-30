@@ -8,9 +8,11 @@ a typo in the config fails loudly instead of silently falling back to a default.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, get_args, get_origin, get_type_hints
 
 import yaml
@@ -31,13 +33,34 @@ class PathsConfig:
     patients_csv: Path
     conditions_csv: Path
     encounters_csv: Path
+    events_parquet: Path
+    events_clinical_parquet: Path
+    code_dictionary_csv: Path
+    data_summary_md: Path
+    clinical_summary_md: Path
+    events_per_patient_fig: Path
+    top_conditions_fig: Path
+
+
+@dataclass(frozen=True)
+class CodeFilterConfig:
+    """Which condition codes count as clinical; see ``data.classify_codes``."""
+
+    keep_suffixes: tuple[str, ...]
+    keep_descriptions: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class DataConfig:
-    """Cohort selection settings."""
+    """Cohort selection settings.
+
+    ``code_merge`` maps a duplicate code to its canonical code (read-only); see
+    ``data.merge_codes``.
+    """
 
     min_conditions_per_patient: int
+    code_merge: Mapping[str, str]
+    code_filter: CodeFilterConfig
 
 
 @dataclass(frozen=True)
@@ -96,6 +119,17 @@ class SplitConfig:
 
 
 @dataclass(frozen=True)
+class SummaryConfig:
+    """Settings for the data summary report and its figures."""
+
+    top_n_conditions: int
+    age_bins: tuple[float, ...]
+    events_hist_bins: int
+    figure_dpi: int
+    min_active_patients_per_year: int
+
+
+@dataclass(frozen=True)
 class Config:
     """Top-level project configuration."""
 
@@ -108,6 +142,7 @@ class Config:
     labels: LabelsConfig
     model: ModelConfig
     split: SplitConfig
+    summary: SummaryConfig
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -155,6 +190,16 @@ def _coerce(value: Any, hint: Any, where: str) -> Any:
         return tuple(
             _coerce(v, t, f"{where}[{i}]") for i, (v, t) in enumerate(zip(value, item_types))
         )
+
+    if get_origin(hint) is Mapping:
+        if not isinstance(value, dict):
+            raise ValueError(f"{where}: expected a mapping, got {type(value).__name__}")
+        key_type, value_type = get_args(hint)
+        items = {
+            _coerce(k, key_type, f"{where} key {k!r}"): _coerce(v, value_type, f"{where}[{k!r}]")
+            for k, v in value.items()
+        }
+        return MappingProxyType(items)
 
     if hint is Path:
         if not isinstance(value, str):
@@ -204,11 +249,38 @@ def _validate(config: Config) -> None:
             f"trajectories.start_year ({traj.start_year}) is after end_year ({traj.end_year})"
         )
 
-    # The last trajectory window must close before the prediction cutoff, otherwise
-    # trajectory features would include post-cutoff events (label leakage).
-    last_window_end = date(traj.end_year + 1, 1, 1)
-    if last_window_end > config.labels.cutoff_date:
+    # A canonical code that is itself merged would make the result depend on order.
+    code_merge = config.data.code_merge
+    chained = sorted(old for old, new in code_merge.items() if new in code_merge)
+    if chained:
         raise ValueError(
-            f"trajectories.end_year ({traj.end_year}) must end before "
-            f"labels.cutoff_date ({config.labels.cutoff_date}) to avoid leakage"
+            f"data.code_merge: these codes map to a code that is itself merged (or to "
+            f"themselves): {chained}"
         )
+
+
+def feature_window_years(config: Config) -> tuple[int, ...]:
+    """Return the trajectory years whose windows may be used as prediction features.
+
+    Trajectories cover the full data range, so they may run past
+    ``labels.cutoff_date``. The yearly window for year ``Y`` spans
+    ``[Y-01-01, (Y+1)-01-01)``; only windows that close on or before the cutoff
+    are returned, so features never see post-cutoff events. Later windows are
+    reserved for labels.
+
+    Args:
+        config: The project configuration.
+
+    Returns:
+        The feature-window years in ascending order (empty if none close by the cutoff).
+
+    Raises:
+        ValueError: If ``trajectories.window`` is not ``"yearly"``.
+    """
+    traj = config.trajectories
+    if traj.window != "yearly":
+        raise ValueError(f"trajectories.window {traj.window!r} is not supported; use 'yearly'")
+    cutoff = config.labels.cutoff_date
+    return tuple(
+        year for year in range(traj.start_year, traj.end_year + 1) if date(year + 1, 1, 1) <= cutoff
+    )
