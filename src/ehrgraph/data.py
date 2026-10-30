@@ -119,7 +119,7 @@ def load_raw(cfg: Config) -> RawTables:
     """
     paths = cfg.paths
     raw = RawTables(
-        patients=_read_csv(paths.patients_csv, PATIENT_COLUMNS),
+        patients=load_patients(cfg),
         conditions=_read_csv(paths.conditions_csv, CONDITION_COLUMNS),
         encounters=_read_csv(paths.encounters_csv, ENCOUNTER_COLUMNS),
     )
@@ -130,6 +130,18 @@ def load_raw(cfg: Config) -> RawTables:
         len(raw.encounters),
     )
     return raw
+
+
+def load_patients(cfg: Config) -> pd.DataFrame:
+    """Read the patients table alone (see ``load_raw``).
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        Columns patient_id, birth_date, death_date and gender.
+    """
+    return _read_csv(cfg.paths.patients_csv, PATIENT_COLUMNS)
 
 
 def _read_csv(path: Path, columns: dict[str, str]) -> pd.DataFrame:
@@ -419,13 +431,32 @@ def filter_clinical_events(events: pd.DataFrame, code_filter: CodeFilterConfig) 
     return clinical
 
 
+def active_until(events: pd.DataFrame, patients: pd.DataFrame) -> pd.Series:
+    """Return when each condition stops being active.
+
+    That is its STOP date or the patient's death date, whichever comes first,
+    because Synthea leaves conditions open when a patient dies. Missing (NaT) means
+    the condition has neither: it is still active at the end of the data.
+
+    Args:
+        events: Events table (needs patient_id and stop).
+        patients: ``RawTables.patients`` (needs unique patient_id and death_date).
+
+    Returns:
+        UTC timestamps aligned with ``events``.
+    """
+    death_date = events["patient_id"].map(patients.set_index("patient_id")["death_date"])
+    stop = events["stop"]
+    return stop.mask(stop.isna() | (death_date < stop), death_date)
+
+
 def active_in_year(events: pd.DataFrame, patients: pd.DataFrame, year: int) -> pd.Series:
     """Flag the conditions that are active at some point during ``year``.
 
-    A condition is active from its event date through its STOP date, compared by
-    calendar day. With no STOP date it stays active, so a chronic condition that
-    started before ``year`` still counts in ``year``. It never counts after the
-    patient's death, because Synthea leaves conditions open when a patient dies.
+    A condition is active from its event date through ``active_until`` (its STOP
+    date, or the patient's death if earlier), compared by calendar day. With
+    neither it stays active, so a chronic condition that started before ``year``
+    still counts in ``year``.
 
     Args:
         events: Events table (needs patient_id, date and stop).
@@ -437,11 +468,8 @@ def active_in_year(events: pd.DataFrame, patients: pd.DataFrame, year: int) -> p
     """
     window_start = pd.Timestamp(year=year, month=1, day=1, tz="UTC")
     window_end = pd.Timestamp(year=year + 1, month=1, day=1, tz="UTC")
-    death_date = events["patient_id"].map(patients.set_index("patient_id")["death_date"])
-    started = events["date"] < window_end
-    not_stopped = events["stop"].isna() | (events["stop"] >= window_start)
-    alive = death_date.isna() | (death_date >= window_start)
-    return started & not_stopped & alive
+    until = active_until(events, patients)
+    return (events["date"] < window_end) & (until.isna() | (until >= window_start))
 
 
 def active_patients_per_year(
@@ -695,7 +723,7 @@ def write_data_summary(
         "",
         "## Patients",
         "",
-        _markdown_table(
+        markdown_table(
             ["Status", "Patients", "Share"],
             [
                 ["Alive", f"{n_patients - n_dead:,}", share(n_patients - n_dead)],
@@ -707,7 +735,7 @@ def write_data_summary(
         "",
         "### Gender",
         "",
-        _markdown_table(
+        markdown_table(
             ["Gender", "Patients", "Share"],
             [[g, f"{n:,}", share(n)] for g, n in gender.items()],
             "lrr",
@@ -719,7 +747,7 @@ def write_data_summary(
         f"(the last event date in the data). Mean {ages.mean():.1f}, "
         f"median {ages.median():.0f}, range {ages.min()} to {ages.max()}.",
         "",
-        _markdown_table(
+        markdown_table(
             ["Age group", "Patients", "Share"],
             [[str(g), f"{n:,}", share(n)] for g, n in age_groups.items()],
             "lrr",
@@ -727,7 +755,7 @@ def write_data_summary(
         "",
         "## Condition events",
         "",
-        _markdown_table(
+        markdown_table(
             ["Measure", "Value"],
             [
                 ["Events", f"{len(events):,}"],
@@ -748,7 +776,7 @@ def write_data_summary(
         "Ranked by the number of patients with at least one event of the code (ties by event "
         "count). Each description is the code's most frequent wording in the data.",
         "",
-        _markdown_table(
+        markdown_table(
             ["Rank", "Code", "Description", "Patients", "Share of patients", "Events"],
             [
                 [str(rank), row.code, row.description, f"{row.patients:,}",
@@ -766,7 +794,7 @@ def write_data_summary(
         "events_in_future counts events after the reference date, which by default is the "
         "latest event date in the data rather than today.",
         "",
-        _markdown_table(
+        markdown_table(
             ["Check", "Kind", "Count"],
             [[name, "hard", f"{checks[name]:,}"] for name in HARD_CHECKS]
             + [[name, "soft", f"{checks[name]:,}"] for name in SOFT_CHECKS],
@@ -869,7 +897,7 @@ def write_clinical_summary(
         "counts once; the events keep their own description. Patients and events are those "
         "recorded under the old code. Every count below is after merging.",
         "",
-        _markdown_table(
+        markdown_table(
             ["Old code", "Old description", "Canonical code", "Canonical description",
              "Patients", "Events"],
             merge_rows,
@@ -887,11 +915,11 @@ def write_clinical_summary(
         "",
         f"### Whitelist ({len(code_filter.keep_descriptions)} entries, `data.code_filter`)",
         "",
-        _markdown_table(["Description", "Codes matched", "Patients"], whitelist_rows, "llr"),
+        markdown_table(["Description", "Codes matched", "Patients"], whitelist_rows, "llr"),
         "",
         "## Result",
         "",
-        _markdown_table(
+        markdown_table(
             ["", "Kept", "Dropped", "Total", "Kept share"],
             [
                 ["Codes", f"{n_kept_codes:,}", f"{len(codes) - n_kept_codes:,}",
@@ -906,7 +934,7 @@ def write_clinical_summary(
         f"{int((codes['rule'] == 'whitelist').sum())} by whitelist only. Before merging "
         f"there were {events['code'].nunique():,} codes and {len(events):,} events.",
         "",
-        _markdown_table(
+        markdown_table(
             ["Patients", "Count", "Share of all patients"],
             [
                 ["With any condition event", f"{merged['patient_id'].nunique():,}",
@@ -923,7 +951,7 @@ def write_clinical_summary(
         "",
         "Ranked by the number of patients with at least one event of the code.",
         "",
-        _markdown_table(
+        markdown_table(
             ["Rank", "Code", "Description", "Patients", "Share of patients", "Events"],
             [
                 [str(rank), row.code, row.description, f"{row.patients:,}",
@@ -940,7 +968,7 @@ def write_clinical_summary(
         "patient had not died before the year began. Alive counts patients born before "
         "the year ended and not dead before it began.",
         "",
-        _markdown_table(
+        markdown_table(
             ["Year", "Alive", "With active clinical condition", "Share of alive", "Flag"],
             [
                 [str(year), f"{alive[year]:,}", f"{n:,}", share(n, alive[year]),
@@ -954,7 +982,7 @@ def write_clinical_summary(
         "",
         f"## Dropped codes ({len(dropped)})",
         "",
-        _markdown_table(
+        markdown_table(
             ["Code", "Description", "Patients", "Events"],
             [[r.code, r.description, f"{r.patients:,}", f"{r.events:,}"]
              for r in dropped.itertuples(index=False)],
@@ -978,7 +1006,7 @@ def _age_group_labels(edges: tuple[float, ...]) -> list[str]:
     return labels
 
 
-def _markdown_table(header: list[str], rows: list[list[str]], align: str) -> str:
+def markdown_table(header: list[str], rows: list[list[str]], align: str) -> str:
     """Render a GitHub markdown table; ``align`` holds one 'l' or 'r' per column."""
     rule = ["---:" if a == "r" else "---" for a in align]
     return "\n".join(

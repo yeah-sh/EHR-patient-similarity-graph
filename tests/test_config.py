@@ -120,7 +120,7 @@ def test_project_cutoff_splits_feature_and_label_windows() -> None:
     labels, traj = config.labels, config.trajectories
     assert labels.cutoff_date == date(2023, 1, 1)
     features = feature_window_years(config)
-    assert features == tuple(range(2000, 2023))
+    assert features == tuple(range(2017, 2023))
     # Every later window is for labels only, and the horizon covers exactly those windows.
     later = tuple(y for y in range(traj.start_year, traj.end_year + 1) if y not in features)
     assert later == (2023, 2024, 2025)

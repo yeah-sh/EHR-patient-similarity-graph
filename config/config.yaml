@@ -18,6 +18,14 @@ paths:
   clinical_summary_md: reports/clinical_summary.md
   events_per_patient_fig: reports/figures/events_per_patient_hist.png
   top_conditions_fig: reports/figures/top_conditions_bar.png
+  # Phase 2 outputs (trajectories.save_trajectories).
+  trajectories_parquet: data/processed/trajectories.parquet
+  patient_index_json: data/processed/patient_index.json
+  code_vocabulary_json: data/processed/code_vocabulary.json
+  windows_npz: data/processed/windows.npz
+  windows_json: data/processed/windows.json
+  transitions_npz: data/processed/transitions.npz
+  trajectories_summary_md: reports/trajectories_summary.md
 
 # Global random seed used by random, numpy and torch.
 seed: 42
@@ -41,47 +49,51 @@ data:
     keep_descriptions:
       # Metabolic findings
       - Prediabetes (finding)
-      - Prediabetes  # older wording of 15777000, which code_merge folds into 714628002
       - Body mass index 30+ - obesity (finding)
       - Body mass index 40+ - severely obese (finding)
-      - Hypertension  # older wording; the code is also kept by "(disorder)"
-      - Hyperlipidemia  # older wording; the code is also kept by "(disorder)"
       # Chronic pain and mental health
       - Chronic pain (finding)
       - Chronic low back pain (finding)
       - Chronic neck pain (finding)
       - Severe anxiety (panic) (finding)
-      # Infection and injuries tagged other than "(disorder)"
-      - Bacteremia (finding)
+      # Injuries tagged other than "(disorder)"
       - Sprain (morphologic abnormality)
       - Burn injury (morphologic abnormality)
-      # Disorders recorded only in an older, untagged wording
-      - Coronary Heart Disease
-      - Cardiac Arrest
-      - Drug overdose
-      - Escherichia coli urinary tract infection
-      - Cystitis
+      # Disorders this Synthea version records without the "(disorder)" tag
       - Gout
-      - Brain damage - traumatic
-      - Chronic paralysis due to lesion of spinal cord
-      - Cystic Fibrosis
-      - Infection caused by Pseudomonas aeruginosa
-      - Male Infertility
-      # Substance use. Alcoholism, Dependent drug abuse and Opioid abuse are
-      # already kept by "(disorder)".
+      - Nonproliferative diabetic retinopathy due to type II diabetes mellitus  # 1551000119108
+      - Proliferative diabetic retinopathy due to type II diabetes mellitus  # 1501000119109
+      # Substance use. Alcoholism and Dependent drug abuse are already kept by
+      # "(disorder)"; Opioid abuse (5602001) is untagged in this data, so it is listed.
       - Smokes tobacco daily (finding)
-      - Unhealthy alcohol drinking behavior (finding)  # matches two codes
+      - Unhealthy alcohol drinking behavior (finding)
       - Misuses drugs (finding)
+      - Opioid abuse
       # History of major cardiac events (no cerebrovascular history codes in the data)
       - History of myocardial infarction (situation)
       - History of coronary artery bypass grafting (situation)
-      - History of cardiac arrest (situation)
       - History of aortic valve replacement (situation)
+      # Removed (15): wordings from older Synthea versions that match no code in this
+      # export, so they kept nothing: Prediabetes, Hypertension, Hyperlipidemia,
+      # Bacteremia (finding), Coronary Heart Disease, Cardiac Arrest, Drug overdose,
+      # Escherichia coli urinary tract infection, Cystitis, Brain damage - traumatic,
+      # Chronic paralysis due to lesion of spinal cord, Cystic Fibrosis, Infection
+      # caused by Pseudomonas aeruginosa, Male Infertility, History of cardiac arrest
+      # (situation). Re-add them for an older export; without "Prediabetes", merged
+      # 15777000 events are kept only if 714628002 also has its "(finding)" wording.
 
 trajectories:
   window: yearly
-  # Condition events run to 2026-10-30, so 2026 is a partial year and 2025 is the last full window.
-  start_year: 2000
+  # The data has a complete record only from late 2016, consistent with Synthea's
+  # default 10-year export history before the run date (2026-10-30). Before that,
+  # mostly conditions still open at the horizon survive: encounters jump from
+  # ~2,000/year (2008-2013) to ~11,000/year from 2017, and 71% of clinical events
+  # dated before 2016-10-30 have no STOP against 14% after. Earlier windows would
+  # miss most acute conditions, so the series starts at the first full year, 2017.
+  # Conditions that began earlier and are still active are carried into 2017 by
+  # their active span, and the event-level trajectories and transitions keep every
+  # event. Events run to 2026-10-30, so 2025 is the last full window.
+  start_year: 2017
   end_year: 2025
 
 features:
@@ -97,7 +109,7 @@ labels:
   # Prediction cutoff: features use only events strictly before this date.
   # Trajectories may run past it; only windows that close on or before the cutoff
   # are used as features, and later windows are used for labels only.
-  # 2023-01-01 gives feature windows 2000-2022 and label windows 2023-2025.
+  # 2023-01-01 gives feature windows 2017-2022 and label windows 2023-2025.
   cutoff_date: 2023-01-01
   # A patient is positive if a target condition first appears within this many
   # years after the cutoff.
@@ -119,7 +131,8 @@ split:
   val: 0.15
   test: 0.15
 
-# reports/data_summary.md, reports/clinical_summary.md and their figures.
+# reports/data_summary.md, reports/clinical_summary.md, reports/trajectories_summary.md
+# and their figures.
 summary:
   top_n_conditions: 20
   # Age-group edges in completed years, left-closed; .inf leaves the last group open.
@@ -128,3 +141,6 @@ summary:
   figure_dpi: 150
   # Years with fewer patients with an active clinical condition are flagged.
   min_active_patients_per_year: 500
+  # Patients drawn at random (with the global seed) for the trajectory examples.
+  example_patients: 3
+  top_n_transitions: 10

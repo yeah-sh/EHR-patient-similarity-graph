@@ -14,50 +14,38 @@ Each old code is renamed to its canonical code before the filter, so the concept
 
 A code is kept if any of its descriptions ends with `(disorder)` or equals one of the whitelist entries below (both case-insensitive). Every other code is dropped. Any wording counts because Synthea versions word some codes differently.
 
-### Whitelist (31 entries, `data.code_filter`)
+### Whitelist (19 entries, `data.code_filter`)
 
 | Description | Codes matched | Patients |
 | --- | --- | ---: |
 | Prediabetes (finding) | 714628002 | 1,142 |
-| Prediabetes | no match | 0 |
 | Body mass index 30+ - obesity (finding) | 162864005 | 1,409 |
 | Body mass index 40+ - severely obese (finding) | 408512008 | 22 |
-| Hypertension | no match | 0 |
-| Hyperlipidemia | no match | 0 |
 | Chronic pain (finding) | 82423001 | 703 |
 | Chronic low back pain (finding) | 278860009 | 502 |
 | Chronic neck pain (finding) | 1121000119107 | 306 |
 | Severe anxiety (panic) (finding) | 80583007 | 347 |
-| Bacteremia (finding) | no match | 0 |
 | Sprain (morphologic abnormality) | 384709000 | 387 |
 | Burn injury (morphologic abnormality) | 48333001 | 122 |
-| Coronary Heart Disease | no match | 0 |
-| Cardiac Arrest | no match | 0 |
-| Drug overdose | no match | 0 |
-| Escherichia coli urinary tract infection | no match | 0 |
-| Cystitis | no match | 0 |
 | Gout | 90560007 | 23 |
-| Brain damage - traumatic | no match | 0 |
-| Chronic paralysis due to lesion of spinal cord | no match | 0 |
-| Cystic Fibrosis | no match | 0 |
-| Infection caused by Pseudomonas aeruginosa | no match | 0 |
-| Male Infertility | no match | 0 |
+| Nonproliferative diabetic retinopathy due to type II diabetes mellitus | 1551000119108 | 55 |
+| Proliferative diabetic retinopathy due to type II diabetes mellitus | 1501000119109 | 3 |
 | Smokes tobacco daily (finding) | 449868002 | 29 |
 | Unhealthy alcohol drinking behavior (finding) | 10939881000119105 | 445 |
 | Misuses drugs (finding) | 361055000 | 213 |
+| Opioid abuse | 5602001 | 28 |
 | History of myocardial infarction (situation) | 399211009 | 145 |
 | History of coronary artery bypass grafting (situation) | 399261000 | 206 |
-| History of cardiac arrest (situation) | no match | 0 |
 | History of aortic valve replacement (situation) | 1231000119100 | 23 |
 
 ## Result
 
 |  | Kept | Dropped | Total | Kept share |
 | --- | ---: | ---: | ---: | ---: |
-| Codes | 220 | 76 | 296 | 74.3% |
-| Events | 40,871 | 66,055 | 106,926 | 38.2% |
+| Codes | 223 | 73 | 296 | 75.3% |
+| Events | 40,957 | 65,969 | 106,926 | 38.3% |
 
-Kept codes by rule: 204 by suffix, 16 by whitelist only. Before merging there were 296 codes and 106,926 events.
+Kept codes by rule: 204 by suffix, 19 by whitelist only. Before merging there were 296 codes and 106,926 events.
 
 | Patients | Count | Share of all patients |
 | --- | ---: | ---: |
@@ -92,29 +80,12 @@ Ranked by the number of patients with at least one event of the code.
 | 19 | 37320007 | Loss of teeth (disorder) | 420 | 14.0% | 420 |
 | 20 | 312608009 | Laceration - injury (disorder) | 389 | 13.0% | 415 |
 
-## Patients with an active clinical condition, 2000-2025
+## Patients with an active clinical condition, 2017-2025
 
 A condition is active in a year if it started before the year ended, had not stopped before the year began (no STOP date means still active), and the patient had not died before the year began. Alive counts patients born before the year ended and not dead before it began.
 
 | Year | Alive | With active clinical condition | Share of alive | Flag |
 | ---: | ---: | ---: | ---: | --- |
-| 2000 | 2,053 | 1,201 | 58.5% |  |
-| 2001 | 2,085 | 1,232 | 59.1% |  |
-| 2002 | 2,121 | 1,278 | 60.3% |  |
-| 2003 | 2,151 | 1,320 | 61.4% |  |
-| 2004 | 2,183 | 1,359 | 62.3% |  |
-| 2005 | 2,210 | 1,390 | 62.9% |  |
-| 2006 | 2,241 | 1,417 | 63.2% |  |
-| 2007 | 2,276 | 1,473 | 64.7% |  |
-| 2008 | 2,298 | 1,499 | 65.2% |  |
-| 2009 | 2,323 | 1,536 | 66.1% |  |
-| 2010 | 2,360 | 1,567 | 66.4% |  |
-| 2011 | 2,386 | 1,601 | 67.1% |  |
-| 2012 | 2,415 | 1,635 | 67.7% |  |
-| 2013 | 2,416 | 1,662 | 68.8% |  |
-| 2014 | 2,433 | 1,760 | 72.3% |  |
-| 2015 | 2,451 | 1,803 | 73.6% |  |
-| 2016 | 2,477 | 1,933 | 78.0% |  |
 | 2017 | 2,499 | 2,162 | 86.5% |  |
 | 2018 | 2,513 | 2,174 | 86.5% |  |
 | 2019 | 2,533 | 2,201 | 86.9% |  |
@@ -127,7 +98,7 @@ A condition is active in a year if it started before the year ended, had not sto
 
 Years below 500: none.
 
-## Dropped codes (76)
+## Dropped codes (73)
 
 | Code | Description | Patients | Events |
 | --- | --- | ---: | ---: |
@@ -171,7 +142,6 @@ Years below 500: none.
 | 161665007 | History of renal transplant (situation) | 81 | 81 |
 | 183996000 | Sterilization requested (situation) | 76 | 76 |
 | 32911000 | Homeless (finding) | 58 | 65 |
-| 1551000119108 | Nonproliferative diabetic retinopathy due to type II diabetes mellitus | 55 | 55 |
 | 267036007 | Dyspnea (finding) | 47 | 47 |
 | 56018004 | Wheezing (finding) | 47 | 47 |
 | 315268008 | Suspected prostate cancer (situation) | 43 | 52 |
@@ -180,7 +150,6 @@ Years below 500: none.
 | 68962001 | Muscle pain (finding) | 40 | 40 |
 | 267102003 | Sore throat (finding) | 39 | 39 |
 | 43724002 | Chill (finding) | 33 | 33 |
-| 5602001 | Opioid abuse | 28 | 28 |
 | 25064002 | Headache (finding) | 27 | 27 |
 | 162573006 | Suspected lung cancer (situation) | 23 | 23 |
 | 876882001 | Died in hospice (finding) | 19 | 19 |
@@ -194,7 +163,6 @@ Years below 500: none.
 | 398152000 | Poor muscle tone (finding) | 6 | 6 |
 | 22253000 | Pain (finding) | 4 | 4 |
 | 698303004 | Awaiting transplantation of bone marrow (situation) | 4 | 4 |
-| 1501000119109 | Proliferative diabetic retinopathy due to type II diabetes mellitus | 3 | 3 |
 | 153351000119102 | History of peripheral stem cell transplant (situation) | 3 | 3 |
 | 428915008 | Toxoplasma gondii antibody detected (finding) | 3 | 3 |
 | 14760008 | Constipation (finding) | 2 | 2 |

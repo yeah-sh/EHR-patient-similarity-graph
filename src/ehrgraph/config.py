@@ -40,6 +40,13 @@ class PathsConfig:
     clinical_summary_md: Path
     events_per_patient_fig: Path
     top_conditions_fig: Path
+    trajectories_parquet: Path
+    patient_index_json: Path
+    code_vocabulary_json: Path
+    windows_npz: Path
+    windows_json: Path
+    transitions_npz: Path
+    trajectories_summary_md: Path
 
 
 @dataclass(frozen=True)
@@ -120,13 +127,15 @@ class SplitConfig:
 
 @dataclass(frozen=True)
 class SummaryConfig:
-    """Settings for the data summary report and its figures."""
+    """Settings for the summary reports and their figures."""
 
     top_n_conditions: int
     age_bins: tuple[float, ...]
     events_hist_bins: int
     figure_dpi: int
     min_active_patients_per_year: int
+    example_patients: int
+    top_n_transitions: int
 
 
 @dataclass(frozen=True)

@@ -52,8 +52,9 @@ e4,2020-06-01T14:00:00Z,2020-06-01T15:00:00Z,p2,emergency
 e5,2020-02-02T12:00:00Z,2020-02-02T12:20:00Z,p3,wellness
 """
 # Row 2 is an exact duplicate of row 1. Encounter e9 does not exist. Code 38341003
-# has two wordings. p2's prediabetes (untagged, whitelisted) is chronic: diagnosed
-# in 1996 with no STOP. p1's pharyngitis resolved in 1998. Employment is social.
+# has two wordings. p2's prediabetes (older, untagged wording, not whitelisted) is
+# chronic: diagnosed in 1996 with no STOP. p1's pharyngitis resolved in 1998.
+# Employment is social.
 CONDITIONS_CSV = """\
 START,STOP,PATIENT,ENCOUNTER,CODE,DESCRIPTION
 2015-03-01,,p1,e1,44054006,Diabetes mellitus type 2 (disorder)
@@ -275,20 +276,19 @@ CLINICAL = [
     "Gingivitis (disorder)",
     "Metabolic syndrome X (disorder)",
     "Prediabetes (finding)",
-    "Prediabetes",
     "Body mass index 30+ - obesity (finding)",
     "Body mass index 40+ - severely obese (finding)",
-    "Hypertension",
-    "Hyperlipidemia",
-    "Coronary Heart Disease",
     # Added back by the clinical review: substance use and major cardiac history.
     "Smokes tobacco daily (finding)",  # its untagged wording shares the code
     "Unhealthy alcohol drinking behavior (finding)",
     "Misuses drugs (finding)",
     "History of myocardial infarction (situation)",
     "History of coronary artery bypass grafting (situation)",
-    "History of cardiac arrest (situation)",
     "History of aortic valve replacement (situation)",
+    # Untagged disorders in this Synthea version.
+    "Opioid abuse",
+    "Nonproliferative diabetic retinopathy due to type II diabetes mellitus",
+    "Proliferative diabetic retinopathy due to type II diabetes mellitus",
 ]
 # Kept dropped by the clinical review.
 REVIEWED_DROPS = [
@@ -301,6 +301,10 @@ REVIEWED_DROPS = [
     "Leaking dental filling (finding)",
     "At risk for suicide (finding)",
     "History of appendectomy (situation)",  # history-of, but not cardiac
+    "Toxoplasma gondii antibody detected (finding)",
+    "Allergy to Hevea brasiliensis latex protein (finding)",
+    "Constipation (finding)",
+    "Unable to swallow saliva (finding)",
 ]
 
 
@@ -390,9 +394,11 @@ def test_filter_clinical_events_on_fixture(cfg: Config) -> None:
     events = build_events(load_raw(cfg))
     clinical = filter_clinical_events(events, cfg.data.code_filter)
     assert list(clinical.columns) == EVENT_COLUMNS
-    assert len(clinical) == N_EVENTS - 1
+    assert len(clinical) == N_EVENTS - 2
     assert "160903007" not in set(clinical["code"])  # Full-time employment (finding)
-    assert "15777000" in set(clinical["code"])  # untagged "Prediabetes", whitelisted
+    # The older untagged "Prediabetes" wording was removed from the whitelist.
+    assert "15777000" not in set(clinical["code"])
+    assert "38341003" in set(clinical["code"])  # untagged "Hypertension" kept by its tagged twin
 
 
 def test_write_clinical_summary(cfg: Config) -> None:
@@ -405,10 +411,11 @@ def test_write_clinical_summary(cfg: Config) -> None:
     )
     assert cfg.paths.clinical_summary_md.read_text(encoding="utf-8") == text
     assert "| 160903007 | Full-time employment (finding) | 1 | 1 |" in text  # dropped list
-    assert "| Events | 8 | 1 | 9 | 88.9% |" in text
+    # Employment and the merged prediabetes (only its untagged wording here) are dropped.
+    assert "| Events | 7 | 2 | 9 | 77.8% |" in text
     # The fixture has only the old prediabetes code, so the canonical one has no description.
     assert "| 15777000 | Prediabetes | 714628002 | not in data | 1 | 1 |" in text
-    assert "| Codes | 5 | 1 | 6 | 83.3% |" in text  # the renamed code still counts
+    assert "| Codes | 4 | 2 | 6 | 66.7% |" in text  # the renamed code still counts
 
 
 # --- Active conditions per year -------------------------------------------------
