@@ -49,6 +49,10 @@ paths:
   graphs_summary_md: reports/graphs_summary.md
   eigenvalues_fig: reports/figures/eigenvalues_final_window.png
   graph_drift_fig: reports/figures/graph_drift.png
+  # Phase 5 outputs (labels.save_labels).
+  labels_parquet: data/processed/labels.parquet
+  splits_json: data/processed/splits.json
+  labels_summary_md: reports/labels_summary.md
 
 # Global random seed used by random, numpy and torch.
 seed: 42
@@ -191,11 +195,66 @@ labels:
   # are used as features, and later windows are used for labels only.
   # 2023-01-01 gives feature windows 2017-2022 and label windows 2023-2025.
   cutoff_date: 2023-01-01
-  # A patient is positive if a target condition first appears within this many
-  # years after the cutoff.
+  # Labels use events from the cutoff to cutoff + horizon_years, exclusive: 2023-01-01
+  # to 2025-12-31. Nothing on or after the horizon end (2026) is read for labels.
   horizon_years: 3
-  # SNOMED-CT codes defining the outcome; to be chosen when labels.py is built.
-  target_codes: []
+  # Loss to follow-up: a patient alive through the horizon whose last encounter (of any
+  # type, before the horizon end) is before this date has every onset label masked.
+  min_last_encounter_date: 2025-01-01
+  # Review threshold on new onsets in the horizon: type2_diabetes (44054006) was dropped
+  # for falling below it (22 onsets). The report flags any kept group below it.
+  min_onsets: 30
+  # Kept groups just above min_onsets; flagged as borderline in the report.
+  borderline_groups: [ckd, metabolic_syndrome]
+  # Onset labels (labels.build_labels): a group's onset is the first event of any of its
+  # codes. Masked if it was before the cutoff; 1 if it is in the horizon; else 0. These
+  # are the secondary targets; the primary target any_onset pools them (labels.ANY_ONSET).
+  # Approved at review. Not added: History of coronary artery bypass grafting to
+  # ischemic_heart_disease.
+  onset_groups:
+    ckd:  # any stage, or disorder of kidney due to diabetes
+      - "431855005"  # Chronic kidney disease stage 1
+      - "431856006"  # Chronic kidney disease stage 2
+      - "433144002"  # Chronic kidney disease stage 3
+      - "431857002"  # Chronic kidney disease stage 4
+      - "46177005"  # End-stage renal disease
+      - "127013003"  # Disorder of kidney due to diabetes mellitus
+    prediabetes:
+      - "714628002"  # Prediabetes (finding)
+    hypertension:
+      - "59621000"  # Essential hypertension
+    ischemic_heart_disease:  # including MI, STEMI and NSTEMI
+      - "414545008"  # Ischemic heart disease
+      - "4557003"  # Preinfarction syndrome
+      - "22298006"  # Myocardial infarction
+      - "401303003"  # Acute ST segment elevation myocardial infarction
+      - "401314000"  # Acute non-ST segment elevation myocardial infarction
+      - "399211009"  # History of myocardial infarction (situation)
+    metabolic_syndrome:
+      - "237602007"  # Metabolic syndrome X
+    hyperlipidemia:  # or hypertriglyceridemia
+      - "55822004"  # Hyperlipidemia
+      - "302870006"  # Hypertriglyceridemia
+    obesity:  # BMI 30+
+      - "162864005"  # Body mass index 30+ - obesity (finding)
+      - "408512008"  # Body mass index 40+ - severely obese (finding)
+    chronic_pain:  # including fibromyalgia and chronic migraine
+      - "82423001"  # Chronic pain (finding)
+      - "278860009"  # Chronic low back pain (finding)
+      - "1121000119107"  # Chronic neck pain (finding)
+      - "203082005"  # Fibromyalgia
+      - "95417003"  # Primary fibromyalgia syndrome
+      - "124171000119105"  # Chronic intractable migraine without aura
+      # Chronic migraine under its older name. The data has no chronic migraine "with
+      # aura" code.
+      - "427419006"  # Transformed migraine
+    substance_use:  # drug abuse, opioid, alcohol, overdose
+      - "6525002"  # Dependent drug abuse
+      - "5602001"  # Opioid abuse
+      - "361055000"  # Misuses drugs (finding)
+      - "7200002"  # Alcoholism
+      - "10939881000119105"  # Unhealthy alcohol drinking behavior (finding)
+      - "1149222004"  # Overdose (the only overdose code in the data)
 
 model:
   hidden_dim: 64
@@ -206,6 +265,9 @@ model:
   weight_decay: 5.0e-4
   epochs: 200
 
+# Patient-level split of the model cohort (labels.stratified_split), stratified by
+# Phase 4 phenotype cluster x any_onset label (masked is its own value), drawn with the
+# global seed.
 split:
   train: 0.7
   val: 0.15

@@ -49,6 +49,8 @@ CONDITION_COLUMNS: dict[str, str] = {
     "DESCRIPTION": "description",
 }
 ENCOUNTER_COLUMNS: dict[str, str] = {"Id": "encounter_id", "START": "encounter_start"}
+# For follow-up: who was seen when (labels.last_encounters).
+ENCOUNTER_DATE_COLUMNS: dict[str, str] = {"PATIENT": "patient_id", "START": "encounter_start"}
 DATE_COLUMNS: frozenset[str] = frozenset(
     {"birth_date", "death_date", "start", "stop", "encounter_start"}
 )
@@ -142,6 +144,18 @@ def load_patients(cfg: Config) -> pd.DataFrame:
         Columns patient_id, birth_date, death_date and gender.
     """
     return _read_csv(cfg.paths.patients_csv, PATIENT_COLUMNS)
+
+
+def load_encounter_dates(cfg: Config) -> pd.DataFrame:
+    """Read the patient and start date of every encounter, of any type.
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        Columns patient_id and encounter_start (UTC), one row per encounter.
+    """
+    return _read_csv(cfg.paths.encounters_csv, ENCOUNTER_DATE_COLUMNS)
 
 
 def _read_csv(path: Path, columns: dict[str, str]) -> pd.DataFrame:

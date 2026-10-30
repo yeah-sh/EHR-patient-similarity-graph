@@ -14,6 +14,7 @@ from ehrgraph.config import (
     PROJECT_ROOT,
     Config,
     feature_window_years,
+    horizon_end,
     load_config,
 )
 
@@ -123,6 +124,33 @@ def test_feature_windows_do_not_extend_past_cutoff(cutoff: date, last_feature_ye
     years = feature_window_years(config)
     assert years == tuple(range(2010, last_feature_year + 1))
     assert all(date(year + 1, 1, 1) <= cutoff for year in years)
+
+
+def test_label_horizon_ends_2026_and_onset_groups_are_typed() -> None:
+    config = load_config()
+    assert horizon_end(config) == date(2026, 1, 1)
+    groups = config.labels.onset_groups
+    assert "ckd" in groups and all(isinstance(c, str) for codes in groups.values() for c in codes)
+
+
+def test_onset_groups_must_not_share_codes(tmp_path: Path) -> None:
+    raw = yaml.safe_load(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    raw["labels"]["onset_groups"] = {"a": ["1", "2"], "b": ["2", "3"]}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="more than one group"):
+        load_config(path)
+
+
+def test_borderline_groups_must_be_onset_groups(tmp_path: Path) -> None:
+    assert load_config().labels.borderline_groups == ("ckd", "metabolic_syndrome")
+    with pytest.raises(ValueError, match="borderline_groups"):
+        load_config(_write_variant(tmp_path, "labels", "borderline_groups", ["type2_diabetes"]))
+
+
+def test_follow_up_date_must_fall_in_the_horizon(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="min_last_encounter_date"):
+        load_config(_write_variant(tmp_path, "labels", "min_last_encounter_date", "2026-06-01"))
 
 
 def test_project_cutoff_splits_feature_and_label_windows() -> None:

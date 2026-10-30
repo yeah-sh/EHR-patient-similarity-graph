@@ -62,6 +62,9 @@ class PathsConfig:
     graphs_summary_md: Path
     eigenvalues_fig: Path
     graph_drift_fig: Path
+    labels_parquet: Path
+    splits_json: Path
+    labels_summary_md: Path
 
 
 @dataclass(frozen=True)
@@ -126,11 +129,18 @@ class GraphConfig:
 
 @dataclass(frozen=True)
 class LabelsConfig:
-    """Prediction target definition and leakage cutoff."""
+    """Prediction targets and the leakage cutoff; see ``labels``.
+
+    ``onset_groups`` maps a group name to its codes (read-only, in config order);
+    ``borderline_groups`` names onset groups the report flags as borderline.
+    """
 
     cutoff_date: date
     horizon_years: int
-    target_codes: tuple[str, ...]
+    min_last_encounter_date: date
+    min_onsets: int
+    borderline_groups: tuple[str, ...]
+    onset_groups: Mapping[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -293,6 +303,29 @@ def _validate(config: Config) -> None:
             f"trajectories.start_year ({traj.start_year}) is after end_year ({traj.end_year})"
         )
 
+    labels = config.labels
+    if labels.horizon_years < 1:
+        raise ValueError(f"labels.horizon_years must be >= 1, got {labels.horizon_years}")
+    if not labels.cutoff_date <= labels.min_last_encounter_date < horizon_end(config):
+        raise ValueError(
+            f"labels.min_last_encounter_date ({labels.min_last_encounter_date}) must fall in the "
+            f"label horizon [{labels.cutoff_date}, {horizon_end(config)})"
+        )
+    group_of: dict[str, str] = {}
+    shared = sorted(
+        code
+        for group, codes in labels.onset_groups.items()
+        for code in codes
+        if group_of.setdefault(code, group) != group
+    )
+    if shared:
+        raise ValueError(f"labels.onset_groups: codes in more than one group: {shared}")
+    if not labels.onset_groups:
+        raise ValueError("labels.onset_groups must name at least one group")
+    unknown = sorted(set(labels.borderline_groups) - set(labels.onset_groups))
+    if unknown:
+        raise ValueError(f"labels.borderline_groups: not onset groups: {unknown}")
+
     # A canonical code that is itself merged would make the result depend on order.
     code_merge = config.data.code_merge
     chained = sorted(old for old, new in code_merge.items() if new in code_merge)
@@ -301,6 +334,21 @@ def _validate(config: Config) -> None:
             f"data.code_merge: these codes map to a code that is itself merged (or to "
             f"themselves): {chained}"
         )
+
+
+def horizon_end(config: Config) -> date:
+    """Return the first day after the label horizon: the cutoff plus ``horizon_years``.
+
+    Labels use events in ``[labels.cutoff_date, horizon_end)``; nothing later.
+
+    Args:
+        config: The project configuration.
+
+    Returns:
+        The exclusive end date of the horizon (2026-01-01 for the project config).
+    """
+    cutoff = config.labels.cutoff_date
+    return cutoff.replace(year=cutoff.year + config.labels.horizon_years)
 
 
 def feature_window_years(config: Config) -> tuple[int, ...]:

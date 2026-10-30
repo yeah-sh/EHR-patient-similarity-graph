@@ -637,9 +637,30 @@ def save_graphs(graphs: WindowGraphs, spectrum: Spectrum, cfg: Config) -> None:
             "cluster": spectrum.labels,
         }
     )
-    path = cfg.paths.graphs_dir / f"phenotype_clusters_{spectrum.year}.csv"
+    path = phenotype_clusters_path(cfg, spectrum.year)
     clusters.to_csv(path, index=False)
     logger.info("Wrote %s", path)
+
+
+def phenotype_clusters_path(cfg: Config, year: int) -> Path:
+    """Return the csv of the phenotype cluster of each patient in the window ``year``."""
+    return cfg.paths.graphs_dir / f"phenotype_clusters_{year}.csv"
+
+
+def load_phenotype_clusters(cfg: Config) -> pd.Series:
+    """Read the final training window's phenotype clusters written by ``save_graphs``.
+
+    For analysis only: phenotypes are never a training target.
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        Cluster number (1 = largest) indexed by patient_id.
+    """
+    path = phenotype_clusters_path(cfg, feature_window_years(cfg)[-1])
+    clusters = pd.read_csv(path, dtype={"patient_id": "string", "cluster": "int64"})
+    return clusters.set_index("patient_id")["cluster"]
 
 
 def load_graphs(cfg: Config) -> WindowGraphs:

@@ -1057,6 +1057,20 @@ def load_model_inputs(cfg: Config) -> ModelInputs:
     return ModelInputs(years, tuple(cohort["patient_ids"]), rows, matrices)
 
 
+def load_model_cohort(cfg: Config) -> tuple[tuple[str, ...], np.ndarray]:
+    """Read the model cohort written by ``save_features``.
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        The patient IDs in model-cohort order (graph node order) and their rows in
+        patient_index.json.
+    """
+    cohort = json.loads(cfg.paths.model_cohort_json.read_text(encoding="utf-8"))
+    return tuple(cohort["patient_ids"]), np.asarray(cohort["rows"], dtype=np.int64)
+
+
 def write_features_summary(
     features: Features,
     comorbidity: Comorbidity,
