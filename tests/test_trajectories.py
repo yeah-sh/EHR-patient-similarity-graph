@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 import scipy.sparse as sp
@@ -17,7 +19,10 @@ from ehrgraph.trajectories import (
     TRANSITION_COLUMNS,
     build_trajectories,
     extract_transitions,
+    load_transitions,
+    load_trajectories,
     load_windows,
+    pre_cutoff_transitions,
     save_trajectories,
     transition_matrix,
     window_trajectories,
@@ -55,6 +60,10 @@ EVENT_ROWS = [
     ("pD", "2014-04-04T08:00:00Z", "2014-04-25", SINUSITIS, "d4"),
     ("pD", "2015-01-01T08:00:00Z", None, HYPERTENSION, "d5"),
     ("pD", "2016-04-01T08:00:00Z", "2016-08-01", BRONCHITIS, "d6"),
+    # E has two distinct codes, both resolved before the first window (2010), so E
+    # has no active condition in any window and is dropped from the cohort.
+    ("pE", "2005-03-01T09:00:00Z", "2005-03-20", BRONCHITIS, "e1"),
+    ("pE", "2007-06-01T09:00:00Z", "2007-06-10", PHARYNGITIS, "e2"),
 ]
 
 
@@ -72,10 +81,10 @@ def _events() -> pd.DataFrame:
 def _patients() -> pd.DataFrame:
     df = pd.DataFrame(
         {
-            "patient_id": ["pA", "pB", "pC", "pD"],
-            "birth_date": ["1960-01-01", "1962-01-01", "1990-01-01", "1940-01-01"],
-            "death_date": [None, None, None, "2016-05-10"],
-            "gender": ["F", "M", "F", "M"],
+            "patient_id": ["pA", "pB", "pC", "pD", "pE"],
+            "birth_date": ["1960-01-01", "1962-01-01", "1990-01-01", "1940-01-01", "1985-01-01"],
+            "death_date": [None, None, None, "2016-05-10", None],
+            "gender": ["F", "M", "F", "M", "F"],
         }
     )
     for name in ("birth_date", "death_date"):
@@ -98,6 +107,7 @@ def cfg(tmp_path: Path) -> Config:
         windows_npz=processed / "windows.npz",
         windows_json=processed / "windows.json",
         transitions_npz=processed / "transitions.npz",
+        transitions_parquet=processed / "transitions.parquet",
         trajectories_summary_md=tmp_path / "reports" / "trajectories_summary.md",
     )
     trajectories = replace(base.trajectories, start_year=2010, end_year=2020)
@@ -112,7 +122,7 @@ def _active_codes(windows, year: int, patient_id: str) -> set[str]:
 
 def test_build_trajectories_keeps_multi_code_patients_in_time_order(cfg: Config) -> None:
     traj = build_trajectories(_events(), _patients(), cfg)
-    assert traj.patient_ids == ("pA", "pB", "pD")  # pC has one distinct code
+    assert traj.patient_ids == ("pA", "pB", "pD")  # pC has one code, pE nothing in 2010-2020
     assert traj.codes == tuple(sorted(DESCRIPTIONS))
     assert traj.descriptions == tuple(DESCRIPTIONS[c] for c in traj.codes)
     assert list(traj.events.columns) == TRAJECTORY_COLUMNS
@@ -179,6 +189,52 @@ def test_windows_reject_unsupported_window(cfg: Config) -> None:
         window_trajectories(traj, monthly)
 
 
+def test_patients_with_no_active_window_are_dropped_everywhere(cfg: Config) -> None:
+    traj = build_trajectories(_events(), _patients(), cfg)
+    assert "pE" not in traj.patient_ids
+    assert "pE" not in set(traj.events["patient_id"])
+    assert "pE" not in set(extract_transitions(traj)["patient_id"])
+    assert window_trajectories(traj, cfg).patient_ids == traj.patient_ids
+
+
+def test_patients_whose_conditions_begin_after_the_last_window_are_dropped(cfg: Config) -> None:
+    early = replace(cfg, trajectories=replace(cfg.trajectories, start_year=2010, end_year=2011))
+    traj = build_trajectories(_events(), _patients(), early)
+    assert traj.patient_ids == ("pD",)  # pA and pB start in 2012; pD has diabetes from 2011
+    assert set(traj.events["patient_id"]) == {"pD"}
+
+
+def test_no_cohort_patient_is_empty_in_every_window(cfg: Config) -> None:
+    windows = window_trajectories(build_trajectories(_events(), _patients(), cfg), cfg)
+    active_windows = sum((np.diff(m.indptr) > 0).astype(int) for m in windows.matrices)
+    assert (active_windows > 0).all()
+
+
+@pytest.mark.skipif(
+    not load_config().paths.windows_npz.exists(), reason="run scripts/02_build_trajectories.py"
+)
+def test_saved_cohort_has_no_patient_empty_in_every_window() -> None:
+    windows = load_windows(load_config())
+    active_windows = sum((np.diff(m.indptr) > 0).astype(int) for m in windows.matrices)
+    empty = int((active_windows == 0).sum())
+    assert empty == 0, f"{empty} saved patients have no active condition in any window"
+
+
+def test_pre_cutoff_transitions_are_those_of_pre_cutoff_events(cfg: Config) -> None:
+    traj = build_trajectories(_events(), _patients(), cfg)
+    cutoff = date(2014, 6, 1)
+    boundary = pd.Timestamp("2014-06-01", tz="UTC")
+    kept = pre_cutoff_transitions(extract_transitions(traj), cutoff)
+    assert (kept["to_date"] < boundary).all() and (kept["from_date"] < boundary).all()
+    assert set(map(tuple, kept[["patient_id", "from_code", "to_code"]].values.tolist())) == {
+        ("pD", DIABETES, BRONCHITIS),
+        ("pD", BRONCHITIS, PHARYNGITIS),
+        ("pD", BRONCHITIS, SINUSITIS),
+    }
+    truncated = replace(traj, events=traj.events[traj.events["date"] < boundary].reset_index(drop=True))
+    pd.testing.assert_frame_equal(kept, extract_transitions(truncated))
+
+
 def test_reverse_order_changes_transitions_but_not_final_window(cfg: Config) -> None:
     traj = build_trajectories(_events(), _patients(), cfg)
     transitions = extract_transitions(traj)
@@ -232,14 +288,16 @@ def test_transition_matrix_rejects_unknown_code(cfg: Config) -> None:
 def test_save_and_load_round_trip(cfg: Config) -> None:
     traj = build_trajectories(_events(), _patients(), cfg)
     windows = window_trajectories(traj, cfg)
-    counts = transition_matrix(extract_transitions(traj), traj.codes)
-    save_trajectories(traj, windows, counts, cfg)
+    transitions = extract_transitions(traj)
+    save_trajectories(traj, windows, transitions, cfg)
 
     loaded = load_windows(cfg)
     assert (loaded.years, loaded.patient_ids, loaded.codes) == (
         windows.years, windows.patient_ids, windows.codes
     )
     assert all((x != y).nnz == 0 for x, y in zip(loaded.matrices, windows.matrices))
+    pd.testing.assert_frame_equal(load_transitions(cfg), transitions)
+    counts = transition_matrix(transitions, traj.codes)
     assert (sp.load_npz(cfg.paths.transitions_npz) != counts).nnz == 0
     vocabulary = json.loads(cfg.paths.code_vocabulary_json.read_text(encoding="utf-8"))
     assert vocabulary[traj.codes.index(DIABETES)] == {
@@ -247,7 +305,12 @@ def test_save_and_load_round_trip(cfg: Config) -> None:
     }
     meta = json.loads(cfg.paths.windows_json.read_text(encoding="utf-8"))
     assert (meta["n_patients"], meta["n_codes"], meta["years"][0]) == (3, 5, 2010)
-    pd.testing.assert_frame_equal(pd.read_parquet(cfg.paths.trajectories_parquet), traj.events)
+    loaded_traj = load_trajectories(cfg)
+    pd.testing.assert_frame_equal(loaded_traj.events, traj.events)
+    assert (loaded_traj.patient_ids, loaded_traj.codes, loaded_traj.descriptions) == (
+        traj.patient_ids, traj.codes, traj.descriptions
+    )
+    assert loaded_traj.data_end == traj.data_end
 
 
 def test_write_trajectory_summary(cfg: Config) -> None:
@@ -257,6 +320,10 @@ def test_write_trajectory_summary(cfg: Config) -> None:
     transitions = extract_transitions(traj)
     text = write_trajectory_summary(events, patients, traj, windows, transitions, cfg)
     assert cfg.paths.trajectories_summary_md.read_text(encoding="utf-8") == text
+    assert "| Patients with at least 2 distinct codes | 4 |" in text
+    assert "| Of those, with no condition active in any window 2010-2020 (dropped) | 1 |" in text
+    assert "| Patients in the cohort | 3 |" in text
+    assert "7 of them end before the prediction cutoff (2023-01-01)" in text
     assert "| 2010 | 0 | 0.0% | n/a | n/a | n/a | 0 |" in text  # nobody active yet
     assert "| 2016 | 3 | 100.0% | 2.33 | 2 | 3 | 1 |" in text
     assert "| 2020 | 2 | 66.7% | 2.00 | 2 | 2 | 0 |" in text  # pD died in 2016

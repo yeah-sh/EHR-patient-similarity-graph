@@ -3,7 +3,8 @@
 Reads data/processed/events_clinical.parquet (from 01_prepare_data.py) and the raw
 patients table, then writes the trajectories, the window matrices, the patient
 index, the code vocabulary and the transition counts to data/processed/, and
-reports/trajectories_summary.md (all paths from config/config.yaml)::
+reports/trajectories_summary.md (all paths from config/config.yaml). The cohort is
+the patients with enough distinct codes and a condition active in some window::
 
     conda run -n ehrgraph python scripts/02_build_trajectories.py [--config PATH]
 """
@@ -21,7 +22,6 @@ from ehrgraph.trajectories import (
     build_trajectories,
     extract_transitions,
     save_trajectories,
-    transition_matrix,
     window_trajectories,
     write_trajectory_summary,
 )
@@ -45,8 +45,7 @@ def main(argv: list[str] | None = None) -> None:
     trajectories = build_trajectories(events, patients, cfg)
     windows = window_trajectories(trajectories, cfg)
     transitions = extract_transitions(trajectories)
-    counts = transition_matrix(transitions, trajectories.codes)
-    save_trajectories(trajectories, windows, counts, cfg)
+    save_trajectories(trajectories, windows, transitions, cfg)
     write_trajectory_summary(events, patients, trajectories, windows, transitions, cfg)
     logger.info("Trajectory building finished")
 

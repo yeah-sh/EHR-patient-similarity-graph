@@ -572,7 +572,7 @@ def plot_events_per_patient(per_patient: pd.Series, path: Path, cfg: Config) -> 
     edges = np.arange(0, max_count + width + 1, width)
     median = float(per_patient.median())
 
-    with matplotlib.rc_context(_chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi)):
         fig = Figure(figsize=(_FIG_WIDTH_IN, _HIST_HEIGHT_IN), layout="constrained")
         ax = fig.subplots()
         ax.hist(
@@ -601,7 +601,7 @@ def plot_events_per_patient(per_patient: pd.Series, path: Path, cfg: Config) -> 
         ax.set_axisbelow(True)
         ax.spines["left"].set_visible(False)
         ax.tick_params(axis="y", length=0)
-        _save_figure(fig, path)
+        save_figure(fig, path)
 
 
 def plot_top_conditions(top: pd.DataFrame, path: Path, cfg: Config) -> None:
@@ -616,7 +616,7 @@ def plot_top_conditions(top: pd.DataFrame, path: Path, cfg: Config) -> None:
     row_in = _MAX_BAR_PX / (_BAR_FILL * dpi)  # keeps each bar at most _MAX_BAR_PX thick
     y = np.arange(len(top))
 
-    with matplotlib.rc_context(_chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi)):
         fig = Figure(
             figsize=(_FIG_WIDTH_IN, len(top) * row_in + _BAR_CHROME_IN), layout="constrained"
         )
@@ -636,10 +636,10 @@ def plot_top_conditions(top: pd.DataFrame, path: Path, cfg: Config) -> None:
         ax.xaxis.set_visible(False)
         ax.spines["bottom"].set_visible(False)
         ax.tick_params(axis="y", length=0, labelcolor=_TEXT_SECONDARY)
-        _save_figure(fig, path)
+        save_figure(fig, path)
 
 
-def _chart_style(dpi: int) -> dict[str, object]:
+def chart_style(dpi: int) -> dict[str, object]:
     """Matplotlib rc settings for the reference palette at ``dpi``."""
     hairline = _POINTS_PER_INCH / dpi  # 1 px in points
     return {
@@ -665,7 +665,7 @@ def _chart_style(dpi: int) -> dict[str, object]:
     }
 
 
-def _save_figure(fig: Figure, path: Path) -> None:
+def save_figure(fig: Figure, path: Path) -> None:
     """Save ``fig`` to ``path``, creating the parent directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path)

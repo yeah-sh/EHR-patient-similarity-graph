@@ -40,7 +40,6 @@ def test_values_are_typed() -> None:
     config = load_config()
     assert isinstance(config.model.weight_decay, float)
     assert config.model.weight_decay == pytest.approx(5e-4)
-    assert config.features.tfidf_ngram_range == (1, 2)
     assert config.graph.k == 10
     assert config.paths.raw_dir == (PROJECT_ROOT / "data" / "raw").resolve()
 
@@ -50,6 +49,17 @@ def test_code_filter_is_typed() -> None:
     assert code_filter.keep_suffixes == ("(disorder)",)
     assert isinstance(code_filter.keep_descriptions, tuple)
     assert "Prediabetes (finding)" in code_filter.keep_descriptions
+
+
+def test_tfidf_ngram_range_is_removed() -> None:
+    assert not hasattr(load_config().features, "tfidf_ngram_range")
+    assert "tfidf_ngram_range" not in DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")
+
+
+def test_redundant_codes_are_strings() -> None:
+    redundant = load_config().features.redundant_codes
+    assert redundant and all(isinstance(code, str) for code in redundant)
+    assert "312608009" in redundant  # Laceration - injury
 
 
 def test_code_merge_is_typed_and_read_only() -> None:

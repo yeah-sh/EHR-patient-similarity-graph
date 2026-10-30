@@ -46,7 +46,18 @@ class PathsConfig:
     windows_npz: Path
     windows_json: Path
     transitions_npz: Path
+    transitions_parquet: Path
     trajectories_summary_md: Path
+    features_dir: Path
+    comorbidity_counts_npz: Path
+    comorbidity_lift_npz: Path
+    chronic_comorbidity_counts_npz: Path
+    chronic_comorbidity_lift_npz: Path
+    model_cohort_json: Path
+    tfidf_idf_npy: Path
+    transition_svd_npz: Path
+    features_summary_md: Path
+    comorbidity_heatmap_fig: Path
 
 
 @dataclass(frozen=True)
@@ -81,10 +92,16 @@ class TrajectoriesConfig:
 
 @dataclass(frozen=True)
 class FeaturesConfig:
-    """Text and temporal feature settings."""
+    """Per-window patient feature settings; see ``features.build_features``."""
 
-    tfidf_ngram_range: tuple[int, int]
+    redundant_codes: tuple[str, ...]
+    redundant_min_share: float
+    tfidf_norm: str
     time_decay_lambda: float
+    transition_svd_components: int
+    transition_svd_n_iter: int
+    transition_weight: float
+    chronic_min_duration_days: int
 
 
 @dataclass(frozen=True)
@@ -136,6 +153,12 @@ class SummaryConfig:
     min_active_patients_per_year: int
     example_patients: int
     top_n_transitions: int
+    comorbidity_top_pairs: int
+    comorbidity_min_count: int
+    chronic_min_patients: int
+    chronic_pair_min_patients: int
+    heatmap_codes: int
+    heatmap_log2_lift_limit: float
 
 
 @dataclass(frozen=True)

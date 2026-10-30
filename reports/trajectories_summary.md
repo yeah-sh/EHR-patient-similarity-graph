@@ -7,91 +7,77 @@ Built by `scripts/02_build_trajectories.py` from events_clinical.parquet. A cond
 | Measure | Count |
 | --- | ---: |
 | Patients with a clinical event | 2,953 |
-| Patients with at least 2 distinct codes (the cohort) | 2,912 |
-| Events of cohort patients, all dates | 40,911 |
-| Events without a STOP date (chronic) | 13,979 (34.2%) |
-| Codes in the vocabulary | 223 |
+| Patients with at least 2 distinct codes | 2,912 |
+| Of those, with no condition active in any window 2017-2025 (dropped) | 266 |
+| Patients in the cohort | 2,646 |
+| Events of cohort patients, all dates | 36,172 |
+| Events without a STOP date (chronic) | 12,100 (33.5%) |
+| Codes in the vocabulary | 214 |
 
 ## Yearly windows, 2017-2025
 
-Events dated before 2017: 14,652, of which 69.6% have no STOP date. From 2017: 26,259, of which 14.4% have no STOP date. Earlier years hold mostly conditions still open when Synthea's full export history begins, so windows start at the first full year after it (see config.yaml). Earlier conditions that are still active count in the windows.
+Events dated before 2017: 9,934, of which 83.8% have no STOP date. From 2017: 26,238, of which 14.4% have no STOP date. Earlier years hold mostly conditions still open when Synthea's full export history begins, so windows start at the first full year after it (see config.yaml). Earlier conditions that are still active count in the windows.
 
 Active patients have at least one active condition in the window. The mean, median and max count active conditions per active patient. Events dated counts the events (new conditions or episodes) dated within the year.
 
 | Year | Active patients | Share of cohort | Mean active conditions | Median | Max | Events dated |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2017 | 2,158 | 74.1% | 5.22 | 4 | 29 | 2,498 |
-| 2018 | 2,171 | 74.6% | 5.27 | 4 | 30 | 2,533 |
-| 2019 | 2,196 | 75.4% | 5.29 | 4 | 33 | 2,547 |
-| 2020 | 2,234 | 76.7% | 5.42 | 4 | 32 | 2,816 |
-| 2021 | 2,257 | 77.5% | 5.44 | 4 | 33 | 2,804 |
-| 2022 | 2,241 | 77.0% | 5.49 | 4 | 33 | 2,647 |
-| 2023 | 2,272 | 78.0% | 5.53 | 4 | 31 | 2,744 |
-| 2024 | 2,262 | 77.7% | 5.61 | 4 | 32 | 2,623 |
-| 2025 | 2,299 | 78.9% | 5.66 | 4 | 31 | 2,796 |
+| 2017 | 2,158 | 81.6% | 5.22 | 4 | 29 | 2,498 |
+| 2018 | 2,171 | 82.0% | 5.27 | 4 | 30 | 2,533 |
+| 2019 | 2,196 | 83.0% | 5.29 | 4 | 33 | 2,547 |
+| 2020 | 2,234 | 84.4% | 5.42 | 4 | 32 | 2,816 |
+| 2021 | 2,257 | 85.3% | 5.44 | 4 | 33 | 2,804 |
+| 2022 | 2,241 | 84.7% | 5.49 | 4 | 33 | 2,647 |
+| 2023 | 2,272 | 85.9% | 5.53 | 4 | 31 | 2,744 |
+| 2024 | 2,262 | 85.5% | 5.61 | 4 | 32 | 2,623 |
+| 2025 | 2,299 | 86.9% | 5.66 | 4 | 31 | 2,796 |
 
 ## Transitions
 
 Each code enters a patient's trajectory once, at its onset. A -> B means B was the first new condition after A's onset; codes with the same onset time share a step, with no transition between them. Transitions use every event, including those before the first window and after the prediction cutoff.
 
-34,178 transitions from 2,907 patients, 6,647 distinct code pairs.
+30,314 transitions from 2,643 patients, 6,098 distinct code pairs. 22,959 of them end before the prediction cutoff (2023-01-01); only those may be used as features. transitions.parquet and transitions.npz hold all of them, for analysis only.
 
 | From | To | Patients |
 | --- | --- | ---: |
-| Gingivitis (disorder) | Gingival disease (disorder) | 561 |
-| Gingivitis (disorder) | Primary dental caries (disorder) | 320 |
-| Prediabetes (finding) | Anemia (disorder) | 319 |
-| Viral sinusitis (disorder) | Gingivitis (disorder) | 259 |
-| Gingivitis (disorder) | Viral sinusitis (disorder) | 254 |
-| Acute viral pharyngitis (disorder) | Gingivitis (disorder) | 192 |
-| Ischemic heart disease (disorder) | History of coronary artery bypass grafting (situation) | 189 |
-| Body mass index 30+ - obesity (finding) | Prediabetes (finding) | 180 |
-| Gingivitis (disorder) | Acute bronchitis (disorder) | 180 |
-| Anemia (disorder) | Body mass index 30+ - obesity (finding) | 178 |
+| Gingivitis (disorder) | Gingival disease (disorder) | 509 |
+| Gingivitis (disorder) | Primary dental caries (disorder) | 286 |
+| Prediabetes (finding) | Anemia (disorder) | 283 |
+| Viral sinusitis (disorder) | Gingivitis (disorder) | 248 |
+| Gingivitis (disorder) | Viral sinusitis (disorder) | 235 |
+| Acute viral pharyngitis (disorder) | Gingivitis (disorder) | 176 |
+| Gingivitis (disorder) | Acute bronchitis (disorder) | 162 |
+| Acute bronchitis (disorder) | Gingivitis (disorder) | 157 |
+| Body mass index 30+ - obesity (finding) | Prediabetes (finding) | 157 |
+| Anemia (disorder) | Body mass index 30+ - obesity (finding) | 157 |
 
 ## Example trajectories (3, random with seed 42)
 
 Every clinical event, in time order. Windows lists the years from 2017-2025 in which the condition is active.
 
-### Patient 1a12f042-780c-f260-823f-71330c6fc5e9
+### Patient 1a8c7157-083f-3910-2c19-34fd909f095e
 
-M, born 1940, died 2010-06-24. 33 events, 22 distinct conditions.
+M, born 1983. 17 events, 15 distinct conditions.
 
 | Date | Condition | Code | Active until | Windows |
 | --- | --- | --- | --- | --- |
-| 1945-12-14 | Chronic sinusitis (disorder) | 40055000 | 2010-06-24 (death) | - |
-| 1962-12-08 | Body mass index 30+ - obesity (finding) | 162864005 | 2010-06-24 (death) | - |
-| 1990-10-06 | Prediabetes (finding) | 714628002 | 2010-06-24 (death) | - |
-| 1991-10-12 | Metabolic syndrome X (disorder) | 237602007 | 2010-06-24 (death) | - |
-| 1991-10-12 | Essential hypertension (disorder) | 59621000 | 2010-06-24 (death) | - |
-| 1993-10-23 | Anemia (disorder) | 271737000 | 2010-06-24 (death) | - |
-| 1994-10-29 | Disorder of kidney due to diabetes mellitus (disorder) | 127013003 | 2010-06-24 (death) | - |
-| 1994-10-29 | Chronic kidney disease stage 1 (disorder) | 431855005 | 2010-06-24 (death) | - |
-| 1996-11-09 | Hyperlipidemia (disorder) | 55822004 | 2010-06-24 (death) | - |
-| 1997-03-08 | Ischemic heart disease (disorder) | 414545008 | 2010-06-24 (death) | - |
-| 1998-08-08 | Chronic kidney disease stage 2 (disorder) | 431856006 | 2010-06-24 (death) | - |
-| 1998-08-08 | Microalbuminuria due to type 2 diabetes mellitus (disorder) | 90781000119102 | 2010-06-24 (death) | - |
-| 1999-09-25 | Loss of teeth (disorder) | 37320007 | 2010-06-24 (death) | - |
-| 2000-11-18 | Acute viral pharyngitis (disorder) | 195662009 | 2000-11-28 | - |
-| 2002-06-22 | Gingivitis (disorder) | 66383009 | 2002-07-06 | - |
-| 2004-04-24 | Gingivitis (disorder) | 66383009 | 2004-05-22 | - |
-| 2004-05-29 | Viral sinusitis (disorder) | 444814009 | 2004-06-07 | - |
-| 2004-07-17 | Gingivitis (disorder) | 66383009 | 2004-08-28 | - |
-| 2004-08-28 | Gingival disease (disorder) | 18718003 | 2004-08-28 | - |
-| 2004-09-04 | Viral sinusitis (disorder) | 444814009 | 2004-09-13 | - |
-| 2006-02-25 | Acute infective cystitis (disorder) | 307426000 | 2006-07-14 | - |
-| 2008-01-19 | Neoplasm of prostate (disorder) | 126906006 | 2010-06-24 (death) | - |
-| 2008-01-19 | Metastatic malignant neoplasm to prostate (disorder) | 94503003 | 2010-06-24 (death) | - |
-| 2008-09-13 | Gingivitis (disorder) | 66383009 | 2008-09-27 | - |
-| 2008-09-27 | Gingival disease (disorder) | 18718003 | 2008-09-27 | - |
-| 2009-02-14 | Gingivitis (disorder) | 66383009 | 2009-02-28 | - |
-| 2009-02-28 | Gingival disease (disorder) | 18718003 | 2009-02-28 | - |
-| 2009-07-11 | Proteinuria due to type 2 diabetes mellitus (disorder) | 157141000119108 | 2010-06-24 (death) | - |
-| 2009-07-11 | Chronic kidney disease stage 3 (disorder) | 433144002 | 2010-06-24 (death) | - |
-| 2009-07-11 | Gingivitis (disorder) | 66383009 | 2009-07-25 | - |
-| 2010-03-06 | Gingivitis (disorder) | 66383009 | 2010-03-20 | - |
-| 2010-03-20 | Gingival disease (disorder) | 18718003 | 2010-03-20 | - |
-| 2010-03-21 | Viral sinusitis (disorder) | 444814009 | 2010-04-07 | - |
+| 1989-10-20 | Chronic sinusitis (disorder) | 40055000 | ongoing | 2017-2025 |
+| 2001-05-15 | Anemia (disorder) | 271737000 | ongoing | 2017-2025 |
+| 2001-05-15 | Prediabetes (finding) | 714628002 | ongoing | 2017-2025 |
+| 2011-05-31 | Diabetes mellitus type 2 (disorder) | 44054006 | ongoing | 2017-2025 |
+| 2014-06-03 | Metabolic syndrome X (disorder) | 237602007 | ongoing | 2017-2025 |
+| 2014-06-03 | Hypertriglyceridemia (disorder) | 302870006 | ongoing | 2017-2025 |
+| 2014-06-03 | Essential hypertension (disorder) | 59621000 | ongoing | 2017-2025 |
+| 2016-12-28 | Acute viral pharyngitis (disorder) | 195662009 | 2017-01-07 | 2017 |
+| 2017-06-20 | Gingivitis (disorder) | 66383009 | 2017-07-05 | 2017 |
+| 2017-07-04 | Gingival disease (disorder) | 18718003 | 2017-07-05 | 2017 |
+| 2017-07-07 | Viral sinusitis (disorder) | 444814009 | 2017-07-27 | 2017 |
+| 2018-05-16 | Laceration of thigh (disorder) | 283385000 | 2018-06-07 | 2018 |
+| 2018-05-16 | Laceration - injury (disorder) | 312608009 | 2018-06-07 | 2018 |
+| 2021-04-12 | Viral sinusitis (disorder) | 444814009 | 2021-04-25 | 2021 |
+| 2022-08-02 | Infection of tooth (disorder) | 427898007 | 2022-08-03 | 2022 |
+| 2022-09-26 | Acute bronchitis (disorder) | 10509002 | 2022-10-15 | 2022 |
+| 2023-07-25 | Gingivitis (disorder) | 66383009 | 2023-08-09 | 2023 |
 
 ### Patient ae084928-abe4-bdc1-6f57-ff3edc4b6898
 
@@ -112,16 +98,17 @@ M, born 2002. 12 events, 9 distinct conditions.
 | 2025-02-28 | Gingivitis (disorder) | 66383009 | 2025-03-14 | 2025 |
 | 2025-03-14 | Primary dental caries (disorder) | 109570002 | 2025-03-14 | 2025 |
 
-### Patient c818549a-9a99-4095-e7e0-19661c4e0251
+### Patient c7dc98ce-297e-e09a-a087-9c5943fc2086
 
-M, born 1993. 7 events, 7 distinct conditions.
+M, born 2019. 8 events, 8 distinct conditions.
 
 | Date | Condition | Code | Active until | Windows |
 | --- | --- | --- | --- | --- |
-| 2007-12-27 | Chronic intractable migraine without aura (disorder) | 124171000119105 | ongoing | 2017-2025 |
-| 2008-03-01 | Chronic pain (finding) | 82423001 | ongoing | 2017-2025 |
-| 2008-12-25 | Impacted molars (disorder) | 196416002 | ongoing | 2017-2025 |
-| 2015-11-27 | Unhealthy alcohol drinking behavior (finding) | 10939881000119105 | 2024-12-06 | 2017-2024 |
-| 2015-11-27 | Body mass index 40+ - severely obese (finding) | 408512008 | ongoing | 2017-2025 |
-| 2018-03-15 | Streptococcal sore throat (disorder) | 43878008 | 2018-03-26 | 2018 |
-| 2021-12-06 | Acute viral pharyngitis (disorder) | 195662009 | 2021-12-14 | 2021 |
+| 2019-12-16 | Acute allergic reaction (disorder) | 241929008 | 2019-12-16 | 2019 |
+| 2021-05-27 | Perennial allergic rhinitis with seasonal variation (disorder) | 232353008 | ongoing | 2021-2025 |
+| 2021-10-11 | Primary dental caries (disorder) | 109570002 | 2021-10-11 | 2021 |
+| 2022-03-28 | Fracture of bone (disorder) | 125605004 | 2022-07-20 | 2022 |
+| 2022-03-28 | Fracture of ankle (disorder) | 16114001 | 2022-07-20 | 2022 |
+| 2023-01-08 | Otitis media (disorder) | 65363002 | 2023-04-10 | 2023 |
+| 2025-07-24 | Laceration - injury (disorder) | 312608009 | 2025-08-09 | 2025 |
+| 2025-07-24 | Facial laceration (disorder) | 370247008 | 2025-08-09 | 2025 |

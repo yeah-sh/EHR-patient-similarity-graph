@@ -24,8 +24,24 @@ paths:
   code_vocabulary_json: data/processed/code_vocabulary.json
   windows_npz: data/processed/windows.npz
   windows_json: data/processed/windows.json
+  # Full-range transitions, for analysis only: features must use only those that end
+  # before labels.cutoff_date (trajectories.pre_cutoff_transitions).
   transitions_npz: data/processed/transitions.npz
+  transitions_parquet: data/processed/transitions.parquet
   trajectories_summary_md: reports/trajectories_summary.md
+  # Phase 3 outputs (features.save_features). features_dir holds features_<year>.npz
+  # per window and features.json.
+  features_dir: data/processed/features
+  comorbidity_counts_npz: data/processed/comorbidity_counts.npz
+  comorbidity_lift_npz: data/processed/comorbidity_lift.npz
+  chronic_comorbidity_counts_npz: data/processed/chronic_comorbidity_counts.npz
+  chronic_comorbidity_lift_npz: data/processed/chronic_comorbidity_lift.npz
+  # Patients with a non-zero feature row in some training-period window; Phase 4 on.
+  model_cohort_json: data/processed/model_cohort.json
+  tfidf_idf_npy: artifacts/tfidf_idf.npy
+  transition_svd_npz: artifacts/transition_svd.npz
+  features_summary_md: reports/features_summary.md
+  comorbidity_heatmap_fig: reports/figures/comorbidity_lift_heatmap.png
 
 # Global random seed used by random, numpy and torch.
 seed: 42
@@ -97,9 +113,42 @@ trajectories:
   end_year: 2025
 
 features:
-  tfidf_ngram_range: [1, 2]
-  # Exponential time decay exp(-lambda * age_in_years) applied to older events.
+  # General codes dropped from the feature vocabulary (code block, transitions and the
+  # chronic comorbidity table): at >= redundant_min_share of their encounters Synthea
+  # also records a more specific code (features.co_recorded_codes). Found on the cohort's
+  # encounters; the all-pairs comorbidity table keeps them.
+  redundant_codes:
+    - "312608009"  # Laceration - injury: hand, foot, forearm, thigh, facial laceration
+    - "384709000"  # Sprain (morphologic abnormality): sprain of ankle, sprain of wrist
+    - "125605004"  # Fracture of bone: forearm, clavicle, ankle, wrist, rib, hip, osteoporotic
+    - "48333001"  # Burn injury (morphologic abnormality): epidermal, partial, full thickness
+    - "90460009"  # Injury of neck: whiplash injury to neck (1:1, 119 encounters each)
+    - "125601008"  # Injury of knee: meniscus tear, ACL, MCL, patellar tendon rupture
+    - "110030002"  # Concussion injury of brain: with / without loss of consciousness (95.7%)
+    - "126906006"  # Neoplasm of prostate: carcinoma in situ, metastatic neoplasm of prostate
+    - "19169002"  # Miscarriage in first trimester: complete miscarriage, blighted ovum, tubal
+  # Meet the rule but kept, as they are not general codes of what they are recorded with:
+  # Cerebral palsy (128188000; recorded with its complications), Miscarriage in second
+  # trimester (85116003; recorded with its causes), and distinct conditions recorded
+  # together 1:1 in <= 8 patients: gallbladder calculus + acute cholecystitis, bullet +
+  # gunshot wound, injury of kidney + acquired coagulation disorder, and one-patient
+  # spina bifida and spinal cord injury bundles. The report lists them all.
+  redundant_min_share: 0.95
+  # Row norm applied to each window's TF-IDF matrix (sklearn.preprocessing.normalize).
+  tfidf_norm: l2
+  # X_cum_t = sum over s <= t of exp(-lambda * (t - s)) * X_s, with t - s in years.
   time_decay_lambda: 0.1
+  # Per-patient transition vectors, cumulative per window: window t uses transitions that
+  # end by the end of year t and before labels.cutoff_date. TruncatedSVD is fit once on
+  # the last training-period window's block and applied to every window.
+  transition_svd_components: 32
+  transition_svd_n_iter: 5
+  # Each block is row-L2-normalized before concatenation; the transition block is then
+  # scaled by this weight, so with both blocks present it holds w^2 / (1 + w^2) of
+  # each final row's squared norm (0.5 at 1.0).
+  transition_weight: 1.0
+  # A condition episode is chronic if it has no STOP date or lasts longer than this.
+  chronic_min_duration_days: 365
 
 graph:
   k: 10
@@ -144,3 +193,15 @@ summary:
   # Patients drawn at random (with the global seed) for the trajectory examples.
   example_patients: 3
   top_n_transitions: 10
+  # reports/features_summary.md: the top comorbidity pairs by lift. All pairs: active
+  # together in at least comorbidity_min_count patient-windows. Chronic pairs: each code
+  # chronic in at least chronic_min_patients patients and the pair active together in at
+  # least chronic_pair_min_patients patients.
+  comorbidity_top_pairs: 25
+  comorbidity_min_count: 30
+  chronic_min_patients: 50
+  chronic_pair_min_patients: 30
+  # Chronic lift heatmap over the most common chronic codes (each with at least
+  # chronic_min_patients); colour clipped to lift 2^-limit .. 2^limit.
+  heatmap_codes: 30
+  heatmap_log2_lift_limit: 3.0

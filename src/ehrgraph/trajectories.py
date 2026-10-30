@@ -5,16 +5,18 @@ Pipeline (run end to end by ``scripts/02_build_trajectories.py``)::
     trajectories = build_trajectories(events, patients, cfg)  # cohort, ordered events
     windows = window_trajectories(trajectories, cfg)  # windows[w][patient, code], CSR
     transitions = extract_transitions(trajectories)  # A -> next new condition B
-    counts = transition_matrix(transitions, trajectories.codes)  # code x code counts
-    save_trajectories(trajectories, windows, counts, cfg)
+    save_trajectories(trajectories, windows, transitions, cfg)  # + code x code counts
     write_trajectory_summary(events, patients, trajectories, windows, transitions, cfg)
 
 A condition is active from its event date through ``active_until``: its STOP date
 or the patient's death, whichever comes first, or the end of the data when it has
 neither (see ``data.active_until``). Conditions active in the same window are
-comorbid. Trajectories, windows and transitions all cover the full data range,
-past the prediction cutoff; features must use only windows that close by the
-cutoff (``config.feature_window_years``).
+comorbid. The cohort is the patients with enough distinct codes and a condition
+active in at least one window, so no patient's row is empty in every window.
+Trajectories, windows and transitions all cover the full data range, past the
+prediction cutoff; features must use only windows that close by the cutoff
+(``config.feature_window_years``) and transitions that end before it
+(``pre_cutoff_transitions``).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -100,8 +103,10 @@ def build_trajectories(events: pd.DataFrame, patients: pd.DataFrame, cfg: Config
     """Order each patient's condition events in time and attach their active spans.
 
     Patients with fewer than ``cfg.data.min_conditions_per_patient`` distinct codes
-    are dropped. Every event of the remaining patients is kept, whatever its date:
-    the window range and the prediction cutoff are applied later.
+    are dropped, and so are patients with no condition active in any window from
+    ``start_year`` to ``end_year`` (all their conditions resolved before the first
+    window or began after the last). Every event of the remaining patients is kept,
+    whatever its date: the prediction cutoff is applied later.
 
     Args:
         events: Clinical events (``data.EVENT_COLUMNS``), e.g. events_clinical.parquet.
@@ -110,30 +115,47 @@ def build_trajectories(events: pd.DataFrame, patients: pd.DataFrame, cfg: Config
 
     Returns:
         The cohort's trajectories.
+
+    Raises:
+        ValueError: If ``trajectories.window`` is not ``"yearly"``.
     """
+    years = _window_years(cfg)
     min_codes = cfg.data.min_conditions_per_patient
     codes_per_patient = events.groupby("patient_id")["code"].nunique()
-    patient_ids = tuple(sorted(map(str, codes_per_patient.index[codes_per_patient >= min_codes])))
-    cohort = events[events["patient_id"].isin(patient_ids)]
+    multi_code = events[
+        events["patient_id"].isin(codes_per_patient.index[codes_per_patient >= min_codes])
+    ]
     data_end = pd.Series([events["date"].max(), events["stop"].max()]).max()
 
-    until = active_until(cohort, patients)
+    until = active_until(multi_code, patients)
     until = until.where(until <= data_end, data_end).astype(DATE_DTYPE)  # NaT -> data_end
     ordered = (
-        cohort.assign(active_until=until, chronic=cohort["stop"].isna())[TRAJECTORY_COLUMNS]
+        multi_code.assign(active_until=until, chronic=multi_code["stop"].isna())[
+            TRAJECTORY_COLUMNS
+        ]
         .sort_values(["patient_id", "date", "code"], kind="stable")
         .reset_index(drop=True)
     )
+    in_some_window = np.logical_or.reduce([active_in_window(ordered, year) for year in years])
+    patient_ids = tuple(sorted(map(str, ordered.loc[in_some_window, "patient_id"].unique())))
+    ordered = ordered[ordered["patient_id"].isin(patient_ids)].reset_index(drop=True)
+    cohort = multi_code[multi_code["patient_id"].isin(patient_ids)]
 
     codes = tuple(sorted(map(str, ordered["code"].unique())))
     wording = build_code_dictionary(cohort).set_index("code")["description"]
     descriptions = tuple(str(wording[code]) for code in codes)
+    n_multi_code = multi_code["patient_id"].nunique()
     logger.info(
-        "Trajectories: kept %d of %d patients with >= %d distinct codes; %d events, %d codes, "
-        "%.1f%% without STOP; data end %s",
-        len(patient_ids),
+        "Trajectories: %d of %d patients have >= %d distinct codes; dropped %d with no "
+        "condition active in %d-%d, kept %d; %d events, %d codes, %.1f%% without STOP; "
+        "data end %s",
+        n_multi_code,
         len(codes_per_patient),
         min_codes,
+        n_multi_code - len(patient_ids),
+        years[0],
+        years[-1],
+        len(patient_ids),
         len(ordered),
         len(codes),
         100 * ordered["chronic"].mean(),
@@ -149,7 +171,8 @@ def window_trajectories(trajectories: Trajectories, cfg: Config) -> TrajectoryWi
     it started before the window ends and is active until a day on or after the
     window starts, as in ``data.active_in_year``. A code with several episodes in
     one window counts once. Every cohort patient has a row in every window, empty
-    when nothing is active (including before birth and after death).
+    when nothing is active (including before birth and after death), but no row is
+    empty in every window (see ``build_trajectories``).
 
     Args:
         trajectories: Output of ``build_trajectories``.
@@ -161,19 +184,15 @@ def window_trajectories(trajectories: Trajectories, cfg: Config) -> TrajectoryWi
     Raises:
         ValueError: If ``trajectories.window`` is not ``"yearly"``.
     """
-    traj_cfg = cfg.trajectories
-    if traj_cfg.window != "yearly":
-        raise ValueError(f"trajectories.window {traj_cfg.window!r} is not supported; use 'yearly'")
+    years = _window_years(cfg)
     events = trajectories.events
     rows = pd.Index(trajectories.patient_ids).get_indexer(events["patient_id"])
     cols = pd.Index(trajectories.codes).get_indexer(events["code"])
     shape = (len(trajectories.patient_ids), len(trajectories.codes))
 
-    years = tuple(range(traj_cfg.start_year, traj_cfg.end_year + 1))
     matrices = []
     for year in years:
-        start, end = _year_bounds(year)
-        active = ((events["date"] < end) & (events["active_until"] >= start)).to_numpy()
+        active = active_in_window(events, year)
         matrix = sp.csr_matrix(
             (np.ones(int(active.sum()), dtype=WINDOW_DTYPE), (rows[active], cols[active])),
             shape=shape,
@@ -199,8 +218,10 @@ def extract_transitions(trajectories: Trajectories) -> pd.DataFrame:
     A -> B means B was the first new condition after A. Later episodes of a code
     add no transitions.
 
-    Transitions span the full data range: rebuild them from events before the
-    prediction cutoff before using them as features.
+    Transitions span the full data range. Features may use only those that end
+    before the prediction cutoff (``pre_cutoff_transitions``); since a
+    code's onset is its first event, those are exactly the transitions that events
+    before the cutoff alone would give.
 
     Args:
         trajectories: Output of ``build_trajectories``.
@@ -236,6 +257,24 @@ def extract_transitions(trajectories: Trajectories) -> pd.DataFrame:
     return transitions
 
 
+def pre_cutoff_transitions(transitions: pd.DataFrame, cutoff: date) -> pd.DataFrame:
+    """Keep the transitions that end strictly before the prediction cutoff.
+
+    A transition ends at its ``to_date``, the onset of the later code, and
+    ``from_date <= to_date``, so both onsets are before the cutoff. These are the
+    only transitions features may use.
+
+    Args:
+        transitions: Output of ``extract_transitions`` (or ``load_transitions``).
+        cutoff: ``labels.cutoff_date``, read as 00:00 UTC.
+
+    Returns:
+        The matching rows, in their original order.
+    """
+    boundary = pd.Timestamp(cutoff.isoformat(), tz="UTC")
+    return transitions[transitions["to_date"] < boundary].reset_index(drop=True)
+
+
 def transition_matrix(transitions: pd.DataFrame, codes: Sequence[str]) -> sp.csr_matrix:
     """Count transitions in a code x code matrix.
 
@@ -266,21 +305,23 @@ def transition_matrix(transitions: pd.DataFrame, codes: Sequence[str]) -> sp.csr
 def save_trajectories(
     trajectories: Trajectories,
     windows: TrajectoryWindows,
-    transition_counts: sp.csr_matrix,
+    transitions: pd.DataFrame,
     cfg: Config,
 ) -> None:
-    """Write the trajectories, windows and transition counts to ``data/processed``.
+    """Write the trajectories, windows and transitions to ``data/processed``.
 
     Files (paths from ``cfg.paths``): trajectories.parquet (the ordered events);
     patient_index.json (patient IDs in row order); code_vocabulary.json (code and
     description in column order); windows.npz (the window matrices stacked
     vertically in year order, so window w is rows w*N to (w+1)*N for N patients);
-    windows.json (years and shape); transitions.npz (code x code counts).
+    windows.json (years and shape); transitions.parquet (every transition, per
+    patient) and transitions.npz (their code x code counts). Both transition files
+    span the full data range and are for analysis only.
 
     Args:
         trajectories: Output of ``build_trajectories``.
         windows: Output of ``window_trajectories`` on ``trajectories``.
-        transition_counts: Output of ``transition_matrix``.
+        transitions: Output of ``extract_transitions`` on ``trajectories``.
         cfg: Project configuration.
 
     Raises:
@@ -307,8 +348,59 @@ def save_trajectories(
             "data_end": trajectories.data_end.isoformat(),
         },
     )
-    _write_npz(paths.transitions_npz, transition_counts)
+    transitions.to_parquet(paths.transitions_parquet, engine="pyarrow", index=False)
+    logger.info("Wrote %d transitions to %s", len(transitions), paths.transitions_parquet)
+    _write_npz(paths.transitions_npz, transition_matrix(transitions, trajectories.codes))
     logger.info("Wrote %d trajectory events to %s", len(trajectories.events), paths.trajectories_parquet)
+
+
+def load_transitions(cfg: Config) -> pd.DataFrame:
+    """Read the per-patient transitions written by ``save_trajectories``.
+
+    They span the full data range; filter them with
+    ``pre_cutoff_transitions`` before building features.
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        ``TRANSITION_COLUMNS``, as returned by ``extract_transitions``.
+    """
+    return pd.read_parquet(cfg.paths.transitions_parquet)
+
+
+def load_trajectories(cfg: Config) -> Trajectories:
+    """Read the trajectories written by ``save_trajectories``.
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        The trajectories, labelled by the saved patient index and code vocabulary.
+    """
+    paths = cfg.paths
+    vocabulary = load_code_vocabulary(cfg)
+    meta = json.loads(paths.windows_json.read_text(encoding="utf-8"))
+    return Trajectories(
+        events=pd.read_parquet(paths.trajectories_parquet),
+        patient_ids=tuple(json.loads(paths.patient_index_json.read_text(encoding="utf-8"))),
+        codes=tuple(vocabulary["code"]),
+        descriptions=tuple(vocabulary["description"]),
+        data_end=pd.Timestamp(meta["data_end"]),
+    )
+
+
+def load_code_vocabulary(cfg: Config) -> pd.DataFrame:
+    """Read the code vocabulary written by ``save_trajectories``.
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        Columns code and description, in window column order.
+    """
+    entries = json.loads(cfg.paths.code_vocabulary_json.read_text(encoding="utf-8"))
+    return pd.DataFrame(entries, columns=["code", "description"])
 
 
 def load_windows(cfg: Config) -> TrajectoryWindows:
@@ -326,8 +418,7 @@ def load_windows(cfg: Config) -> TrajectoryWindows:
     paths = cfg.paths
     meta = json.loads(paths.windows_json.read_text(encoding="utf-8"))
     patient_ids = tuple(json.loads(paths.patient_index_json.read_text(encoding="utf-8")))
-    vocabulary = json.loads(paths.code_vocabulary_json.read_text(encoding="utf-8"))
-    codes = tuple(entry["code"] for entry in vocabulary)
+    codes = tuple(load_code_vocabulary(cfg)["code"])
     years = tuple(meta["years"])
     stacked = sp.load_npz(paths.windows_npz).tocsr()
     n = len(patient_ids)
@@ -368,6 +459,10 @@ def write_trajectory_summary(
     opts, traj_cfg = cfg.summary, cfg.trajectories
     traj = trajectories.events
     n_cohort = len(trajectories.patient_ids)
+    min_codes = cfg.data.min_conditions_per_patient
+    n_multi_code = int((events.groupby("patient_id")["code"].nunique() >= min_codes).sum())
+    cutoff = cfg.labels.cutoff_date
+    n_pre_cutoff = len(pre_cutoff_transitions(transitions, cutoff))
     description = dict(zip(trajectories.codes, trajectories.descriptions))
     window_start, _ = _year_bounds(traj_cfg.start_year)
     early = traj["date"] < window_start
@@ -410,8 +505,10 @@ def write_trajectory_summary(
             ["Measure", "Count"],
             [
                 ["Patients with a clinical event", f"{events['patient_id'].nunique():,}"],
-                [f"Patients with at least {cfg.data.min_conditions_per_patient} distinct codes "
-                 "(the cohort)", f"{n_cohort:,}"],
+                [f"Patients with at least {min_codes} distinct codes", f"{n_multi_code:,}"],
+                [f"Of those, with no condition active in any window {traj_cfg.start_year}-"
+                 f"{traj_cfg.end_year} (dropped)", f"{n_multi_code - n_cohort:,}"],
+                ["Patients in the cohort", f"{n_cohort:,}"],
                 ["Events of cohort patients, all dates", f"{len(traj):,}"],
                 ["Events without a STOP date (chronic)",
                  f"{int(traj['chronic'].sum()):,} ({share(traj['chronic'].sum(), len(traj))})"],
@@ -449,7 +546,9 @@ def write_trajectory_summary(
         "before the first window and after the prediction cutoff.",
         "",
         f"{len(transitions):,} transitions from {transitions['patient_id'].nunique():,} "
-        f"patients, {len(pairs):,} distinct code pairs.",
+        f"patients, {len(pairs):,} distinct code pairs. {n_pre_cutoff:,} of them end before "
+        f"the prediction cutoff ({cutoff:%Y-%m-%d}); only those may be used as features. "
+        "transitions.parquet and transitions.npz hold all of them, for analysis only.",
         "",
         markdown_table(
             ["From", "To", "Patients"],
@@ -516,6 +615,31 @@ def _example_section(
         markdown_table(["Date", "Condition", "Code", "Active until", "Windows"], rows, "lllll"),
         "",
     ]
+
+
+def _window_years(cfg: Config) -> tuple[int, ...]:
+    """Return the window years, ``start_year`` to ``end_year``; only yearly windows exist."""
+    traj_cfg = cfg.trajectories
+    if traj_cfg.window != "yearly":
+        raise ValueError(f"trajectories.window {traj_cfg.window!r} is not supported; use 'yearly'")
+    return tuple(range(traj_cfg.start_year, traj_cfg.end_year + 1))
+
+
+def active_in_window(events: pd.DataFrame, year: int) -> np.ndarray:
+    """Flag the trajectory events active at some point during the window for ``year``.
+
+    An event is active if it started before the window ends and is active until a
+    day on or after the window starts; this is what ``window_trajectories`` records.
+
+    Args:
+        events: ``Trajectories.events`` (or a subset), with date and active_until.
+        year: Calendar year of the window.
+
+    Returns:
+        Boolean array aligned with ``events``.
+    """
+    start, end = _year_bounds(year)
+    return ((events["date"] < end) & (events["active_until"] >= start)).to_numpy()
 
 
 def _year_bounds(year: int) -> tuple[pd.Timestamp, pd.Timestamp]:
