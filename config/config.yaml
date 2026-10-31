@@ -106,6 +106,8 @@ paths:
   ae_umap_chronic_fig: reports/figures/ae_umap_chronic_conditions.png
   ae_trajectory_fig: reports/figures/ae_trajectories_umap.png
   next_year_auroc_fig: reports/figures/next_year_auroc.png
+  # Phase 8 (scripts/08_predict_demo.py): the example patients' predictions.
+  predict_demo_md: reports/predict_demo.md
 
 # Global random seed used by random, numpy and torch.
 seed: 42
@@ -510,6 +512,66 @@ embedding_eval:
   # Neighbour concordance: mean Jaccard of chronic conditions with this many nearest
   # neighbours (cosine), for test-split patients with a chronic condition.
   n_neighbours: 5
+
+# Phase 8 inference (inference.Predictor, scripts/08_predict_demo.py). A new patient is placed
+# among the model-cohort (reference) patients with the saved transforms, graphs and weights;
+# nothing is refitted or retrained. Graph insertion uses graph.k neighbours; the similarity
+# search uses the 2022 spectral embedding of Phase 7b (embedding_eval.dim eigenvectors).
+inference:
+  # The GraphAE whose per-window GRU states give the new patient's trajectory: the final
+  # TemporalGraphAE of Phase 7b (<paths.graph_ae_dir>/<graph_ae_key>.pt).
+  graph_ae_key: graph_ae
+  # A condition given with its onset only (no stop) counts as chronic, active from its onset
+  # through the last window, when at least this share of its reference episodes are chronic
+  # (features.chronic_mask); otherwise as acute, active in its onset year only. The shares
+  # are nearly all 0 or 1 (5 of the 214 codes lie between 0.2 and 0.8).
+  chronic_default_share: 0.5
+  # Similar reference patients listed, by cosine similarity in the spectral embedding.
+  n_similar: 10
+  # Neighbour outcomes: among this many nearest reference patients, the share with each
+  # onset in the label horizon, over those whose label is observed.
+  outcome_neighbours: [10, 50]
+  # explain(): lift of the patient's chronic conditions among this many nearest reference
+  # patients over all reference patients; the explain_top highest are listed.
+  explain_neighbours: 50
+  explain_top: 5
+  # Example patients of scripts/08_predict_demo.py; history entries are [onset year, code].
+  demo_patients:
+    - name: Healthy young adult
+      birth_date: 1999-03-15
+      sex: F
+      history:
+        - [2018, "444814009"]  # Viral sinusitis
+        - [2020, "195662009"]  # Acute viral pharyngitis
+        - [2021, "66383009"]  # Gingivitis
+        - [2022, "44465007"]  # Sprain of ankle
+        - [2022, "384709000"]  # Sprain (morphologic abnormality): redundant, dropped as in Phase 3
+        - [2022, "12345678"]  # not in the code vocabulary: reported as unknown
+    - name: Metabolic-syndrome pattern
+      birth_date: 1972-06-01
+      sex: M
+      history:
+        - [2017, "162864005"]  # Body mass index 30+ - obesity
+        - [2018, "714628002"]  # Prediabetes
+        - [2019, "444814009"]  # Viral sinusitis
+        - [2019, "59621000"]  # Essential hypertension
+        - [2021, "237602007"]  # Metabolic syndrome X
+    # Pain- and musculoskeletal-dominated. A cardiometabolic elderly history (hypertension,
+    # diabetes, CKD, heart failure) falls in phenotype 2 with the metabolic-syndrome pattern,
+    # as do 132 of the 173 reference patients aged 75+ with 6+ chronic conditions; this one
+    # falls in phenotype 4 (11 of the 173), so the three examples differ.
+    - name: Multimorbid elderly
+      birth_date: 1944-09-10
+      sex: F
+      history:
+        - [2013, "162864005"]  # Body mass index 30+ - obesity
+        - [2015, "82423001"]  # Chronic pain
+        - [2015, "278860009"]  # Chronic low back pain
+        - [2016, "239873007"]  # Osteoarthritis of knee
+        - [2017, "414545008"]  # Ischemic heart disease
+        - [2018, "64859006"]  # Osteoporosis
+        - [2019, "271737000"]  # Anemia
+        - [2020, "55822004"]  # Hyperlipidemia
 
 # Patient-level split of the model cohort (labels.stratified_split), stratified by
 # Phase 4 phenotype cluster x any_onset label (masked is its own value), drawn with the

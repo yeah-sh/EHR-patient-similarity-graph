@@ -23,6 +23,7 @@ conda run -n ehrgraph python scripts/06a_baselines.py         # logistic-regress
 conda run -n ehrgraph python scripts/06b_tune.py              # hyperparameter search (validation)
 conda run -n ehrgraph python scripts/06_train.py [--quick]    # temporal GCN, embeddings, calibration
 conda run -n ehrgraph python scripts/07_evaluate.py [--reuse-cv] # cross-validation, test set, embeddings
+conda run -n ehrgraph python scripts/08_predict_demo.py      # place three example patients (Phase 8)
 conda run -n ehrgraph python -m pytest                        # tests
 ```
 
@@ -79,4 +80,34 @@ to `artifacts/quick/`. Results are in `reports/training_summary.md`.
 
 Results are in `reports/results.md` (and `results.csv`); plain-language findings in
 `reports/evaluation_summary.md`. `--reuse-cv` rebuilds the reports from the saved out-of-fold
-predictions (`artifacts/cv_oof_predictions.csv`) without retraining.
+predictions (`artifacts/cv_oof_predictions.csv`) without retraining. `reports/findings.md`
+summarizes Phases 4-7b in one page.
+
+## Inference for a new patient (Phase 8)
+
+`ehrgraph.inference.Predictor` places a new patient among the 2,581 reference patients without
+refitting or retraining anything (load once, about 0.3 s; about 0.2 s per patient):
+
+```python
+from ehrgraph.inference import NewPatient, Predictor
+
+predictor = Predictor.load()
+prediction = predictor.predict(NewPatient([(2018, "714628002"), (2019, "59621000")],
+                                          birth_date="1972-06-01", sex="M"))
+predictor.explain(prediction)  # the patient's chronic conditions over-represented nearby
+```
+
+- **Input:** `(onset, code)` or `(onset, code, stop)` entries, or a mapping code -> onset.
+  Unknown codes are returned in `prediction.unknown_codes`; events on or after the cutoff are
+  dropped. Features use the saved IDF and transition SVD, exactly as in Phase 3.
+- **Graph insertion:** in each year's graph the patient is linked to their `graph.k` most
+  similar reference patients and `A_hat` is re-normalized for those nodes only; the reference
+  graph is otherwise unchanged (an approximation of rebuilding it).
+- **Outputs:** the nearest phenotype and the most similar reference patients, from the Nystrom
+  extension into the 2022 spectral embedding; the onsets those neighbours had in 2023-2025
+  (observed labels only, as counts); the GraphAE state per year (the trajectory); and the
+  supervised model's Platt-calibrated `any_onset` probability, shown with its test AUROC
+  0.559 (0.483-0.632). There is no mortality output.
+
+`scripts/08_predict_demo.py` runs the three example patients of `inference.demo_patients` and
+writes `reports/predict_demo.md`.

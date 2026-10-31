@@ -103,6 +103,7 @@ class PathsConfig:
     ae_umap_chronic_fig: Path
     ae_trajectory_fig: Path
     next_year_auroc_fig: Path
+    predict_demo_md: Path
 
 
 @dataclass(frozen=True)
@@ -328,6 +329,32 @@ class EmbeddingEvalConfig:
 
 
 @dataclass(frozen=True)
+class DemoPatientConfig:
+    """An example patient of ``scripts/08_predict_demo.py``.
+
+    ``history`` holds (onset year, SNOMED-CT code) pairs; ``sex`` is "F" or "M".
+    """
+
+    name: str
+    birth_date: date
+    sex: str
+    history: tuple[tuple[int, str], ...]
+
+
+@dataclass(frozen=True)
+class InferenceConfig:
+    """Phase 8 inference for new patients; see ``inference.Predictor``."""
+
+    graph_ae_key: str
+    chronic_default_share: float
+    n_similar: int
+    outcome_neighbours: tuple[int, ...]
+    explain_neighbours: int
+    explain_top: int
+    demo_patients: tuple[DemoPatientConfig, ...]
+
+
+@dataclass(frozen=True)
 class SplitConfig:
     """Train/validation/test fractions; must sum to 1."""
 
@@ -375,6 +402,7 @@ class Config:
     embedding_analysis: EmbeddingAnalysisConfig
     graph_ae: GraphAEConfig
     embedding_eval: EmbeddingEvalConfig
+    inference: InferenceConfig
     split: SplitConfig
     summary: SummaryConfig
 
@@ -610,6 +638,15 @@ def _validate(config: Config) -> None:
         bad.append("C")
     if bad:
         raise ValueError(f"embedding_eval: these values must be positive: {bad}")
+
+    inference = config.inference
+    counts = ("n_similar", "explain_neighbours", "explain_top")
+    bad = [name for name in counts if getattr(inference, name) < 1]
+    if not inference.outcome_neighbours or min(inference.outcome_neighbours) < 1:
+        bad.append("outcome_neighbours")
+    if bad or not 0.0 < inference.chronic_default_share <= 1.0:
+        raise ValueError(f"inference: these values must be positive: {bad}; "
+                         "chronic_default_share must lie in (0, 1]")
 
     # A canonical code that is itself merged would make the result depend on order.
     code_merge = config.data.code_merge
