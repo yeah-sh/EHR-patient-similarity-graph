@@ -1,10 +1,21 @@
-# Phase 8: predictions for three example patients
+# Phase 8: predictions for 4 example patients
 
-Built by `scripts/08_predict_demo.py` with `inference.Predictor`. Each patient is placed among the 2,581 reference (model-cohort) patients without refitting anything: features from the saved transforms; in each year's k-NN graph the patient is linked to their 10 most similar reference patients (normalization updated for the affected nodes only); the Nystrom extension places them in the 2022 spectral embedding, where the phenotype, the similar patients and the neighbour outcomes are read. Predictor loaded in 0.62 s. Synthetic data (Synthea).
+Built by `scripts/08_predict_demo.py` with `inference.Predictor`. Each patient is placed among the 2,581 reference (model-cohort) patients without refitting anything: features from the saved transforms; in each year's k-NN graph the patient is linked to their 10 most similar reference patients (normalization updated for the affected nodes only); the Nystrom extension places them in the 2022 spectral embedding, where the phenotype, the similar patients and the neighbour outcomes are read. Predictor loaded in 0.52 s. Synthetic data (Synthea).
+
+The examples are realistic profiles, not chosen to land in different phenotypes: the multimorbid elderly patient lands in the same phenotype as the metabolic-syndrome pattern. Phenotype 2 holds 132 of the 173 reference patients aged 75+ with 6+ chronic conditions (a cardio-metabolic continuum).
+
+| # | Patient | Phenotype | At risk for | Neighbour any_onset, 10 nearest | Neighbour any_onset, 50 nearest | All reference patients |
+| --- | --- | ---: | --- | ---: | ---: | ---: |
+| 1 | Healthy young adult | 1 | 9 of 9 groups | 3/8 (38%) | 13/44 (30%) | 414/2221 (19%) |
+| 2 | Metabolic-syndrome pattern | 2 | 5 of 9 groups | 3/10 (30%) | 15/50 (30%) | 414/2221 (19%) |
+| 3 | Multimorbid elderly | 2 | 5 of 9 groups | 3/10 (30%) | 15/49 (31%) | 414/2221 (19%) |
+| 4 | Chronic pain and musculoskeletal | 4 | 5 of 9 groups | 1/8 (12%) | 8/43 (19%) | 414/2221 (19%) |
+
+**Risk set.** `any_onset` is a new onset in 2023-2025 in any of the 9 onset groups; a group a patient already has is masked, so each neighbour counts only for the groups they were still at risk of. A new onset can only occur in a group the patient does not already have, so a multimorbid patient has fewer groups left at risk, and so do their similar patients. A healthy patient's neighbours can therefore show a higher any_onset rate than a multimorbid patient's: more groups in which a new onset can occur, not more disease.
 
 ## 1. Healthy young adult
 
-Female, born 1999-03-15 (age 23.8 at the cutoff 2023-01-01). 6 history entries; prediction in 0.33 s.
+Female, born 1999-03-15 (age 23.8 at the cutoff 2023-01-01). 6 history entries; prediction in 0.24 s.
 
 **Conditions used** (onset year; chronic = active from onset through the last window):
 
@@ -21,6 +32,8 @@ Female, born 1999-03-15 (age 23.8 at the cutoff 2023-01-01). 6 history entries; 
 - 384709000 (Sprain, 2022-01-01) not used: redundant: recorded with a more specific code, dropped from the features as in Phase 3
 
 **Nearest phenotype: cluster 1** (786 reference patients). Most over-represented chronic conditions: Childhood asthma (6% vs 2% overall); Perennial allergic rhinitis (5% vs 2% overall); Seasonal allergic rhinitis (2% vs 1% overall); Perennial allergic rhinitis with seasonal variation (6% vs 2% overall); Child attention deficit disorder (3% vs 1% overall).
+
+**At risk for 9 of 9 groups** (ckd, prediabetes, hypertension, ischemic heart disease, metabolic syndrome, hyperlipidemia, obesity, chronic pain, substance use). Already has: none.
 
 **Supervised `any_onset` probability: 21.8%** (TemporalGCN, Platt-calibrated; test AUROC 0.559 (0.483-0.632), an interval that includes 0.5, so near chance; reference base rate 18.6%).
 
@@ -71,7 +84,7 @@ No chronic condition: the placement rests on acute conditions and transitions.
 
 ## 2. Metabolic-syndrome pattern
 
-Male, born 1972-06-01 (age 50.6 at the cutoff 2023-01-01). 5 history entries; prediction in 0.27 s.
+Male, born 1972-06-01 (age 50.6 at the cutoff 2023-01-01). 5 history entries; prediction in 0.25 s.
 
 **Conditions used** (onset year; chronic = active from onset through the last window):
 
@@ -84,6 +97,8 @@ Male, born 1972-06-01 (age 50.6 at the cutoff 2023-01-01). 5 history entries; pr
 | 2021 | Metabolic syndrome X | 237602007 | yes |
 
 **Nearest phenotype: cluster 2** (630 reference patients). Most over-represented chronic conditions: Neuropathy due to type 2 diabetes mellitus (6% vs 1% overall); Nonproliferative diabetic retinopathy due to type II diabetes mellitus (6% vs 1% overall); Chronic kidney disease stage 4 (5% vs 1% overall); Acute non-ST segment elevation myocardial infarction (8% vs 2% overall); History of coronary artery bypass grafting (20% vs 5% overall).
+
+**At risk for 5 of 9 groups** (ckd, ischemic heart disease, hyperlipidemia, chronic pain, substance use). Already has: prediabetes, hypertension, metabolic syndrome, obesity.
 
 **Supervised `any_onset` probability: 17.6%** (TemporalGCN, Platt-calibrated; test AUROC 0.559 (0.483-0.632), an interval that includes 0.5, so near chance; reference base rate 18.6%).
 
@@ -139,6 +154,81 @@ Male, born 1972-06-01 (age 50.6 at the cutoff 2023-01-01). 5 history entries; pr
 
 ## 3. Multimorbid elderly
 
+Female, born 1944-09-10 (age 78.3 at the cutoff 2023-01-01). 9 history entries; prediction in 0.24 s.
+
+**Conditions used** (onset year; chronic = active from onset through the last window):
+
+| Onset | Condition | Code | Chronic |
+| --- | --- | --- | --- |
+| 2010 | Essential hypertension | 59621000 | yes |
+| 2012 | Hyperlipidemia | 55822004 | yes |
+| 2014 | Diabetes mellitus type 2 | 44054006 | yes |
+| 2016 | Ischemic heart disease | 414545008 | yes |
+| 2017 | Osteoarthritis of knee | 239873007 | yes |
+| 2018 | Chronic kidney disease stage 2 | 431856006 | yes |
+| 2019 | Anemia | 271737000 | yes |
+| 2020 | Osteoporosis | 64859006 | yes |
+| 2021 | Chronic congestive heart failure | 88805009 | yes |
+
+**Nearest phenotype: cluster 2** (630 reference patients). Most over-represented chronic conditions: Neuropathy due to type 2 diabetes mellitus (6% vs 1% overall); Nonproliferative diabetic retinopathy due to type II diabetes mellitus (6% vs 1% overall); Chronic kidney disease stage 4 (5% vs 1% overall); Acute non-ST segment elevation myocardial infarction (8% vs 2% overall); History of coronary artery bypass grafting (20% vs 5% overall).
+
+**At risk for 5 of 9 groups** (prediabetes, metabolic syndrome, obesity, chronic pain, substance use). Already has: ckd, hypertension, ischemic heart disease, hyperlipidemia.
+
+**Supervised `any_onset` probability: 7.2%** (TemporalGCN, Platt-calibrated; test AUROC 0.559 (0.483-0.632), an interval that includes 0.5, so near chance; reference base rate 18.6%).
+
+**Neighbour outcomes**: new onsets in 2023-2025 among the nearest reference patients in the spectral embedding, over those whose label is observed (masked labels never count).
+
+| Onset | Patient already had it | 10 nearest | 50 nearest | All reference patients |
+| --- | --- | ---: | ---: | ---: |
+| any of the groups |  | 3/10 (30%) | 15/49 (31%) | 414/2221 (19%) |
+| ckd | yes | 1/8 (12%) | 2/38 (5%) | 32/2054 (2%) |
+| prediabetes | no | 0/0 | 0/2 (0%) | 51/1381 (4%) |
+| hypertension | yes | 0/0 | 0/0 | 51/1729 (3%) |
+| ischemic heart disease | yes | 1/6 (17%) | 3/36 (8%) | 55/1887 (3%) |
+| metabolic syndrome | no | 0/1 (0%) | 2/13 (15%) | 31/1924 (2%) |
+| hyperlipidemia | yes | 1/6 (17%) | 5/34 (15%) | 56/1915 (3%) |
+| obesity | no | 0/2 (0%) | 1/9 (11%) | 72/1188 (6%) |
+| chronic pain | no | 0/7 (0%) | 1/35 (3%) | 34/1608 (2%) |
+| substance use | no | 1/7 (14%) | 4/36 (11%) | 109/1720 (6%) |
+
+**10 most similar reference patients** (cosine similarity in the 2022 spectral embedding) and the chronic conditions they share with this patient:
+
+| # | Patient | Similarity | Age | Sex | Phenotype | Shared / their chronic | Shared chronic conditions |
+| ---: | --- | ---: | ---: | --- | ---: | ---: | --- |
+| 1 | 55ddc877 | 0.847 | 63 | F | 2 | 1 / 6 | Essential hypertension |
+| 2 | 76a2c3b0 | 0.819 | 60 | F | 2 | 2 / 6 | Ischemic heart disease; Essential hypertension |
+| 3 | 4a7ca231 | 0.804 | 79 | M | 2 | 5 / 14 | Anemia; Ischemic heart disease; Hyperlipidemia; Essential hypertension; Osteoporosis |
+| 4 | 47c1d86a | 0.785 | 52 | F | 2 | 2 / 5 | Anemia; Essential hypertension |
+| 5 | 9daea916 | 0.754 | 66 | F | 2 | 3 / 13 | Anemia; Diabetes mellitus type 2; Essential hypertension |
+| 6 | 8739f725 | 0.751 | 105 | M | 2 | 5 / 6 | Anemia; Ischemic heart disease; Hyperlipidemia; Essential hypertension; Osteoporosis |
+| 7 | 279fbb62 | 0.741 | 68 | M | 2 | 2 / 8 | Anemia; Essential hypertension |
+| 8 | 5e2ff3ca | 0.735 | 56 | M | 2 | 2 / 6 | Anemia; Essential hypertension |
+| 9 | 55b5c2df | 0.734 | 47 | M | 2 | 2 / 7 | Anemia; Essential hypertension |
+| 10 | 42c1a845 | 0.733 | 91 | F | 2 | 4 / 16 | Anemia; Ischemic heart disease; Hyperlipidemia; Essential hypertension |
+
+**Explanation**: the patient's chronic conditions most over-represented among the 50 nearest reference patients (lift = share there / share among all reference patients):
+
+| Condition | Neighbours with it | All reference patients | Lift |
+| --- | ---: | ---: | ---: |
+| Essential hypertension | 50/50 (100%) | 21.2% | 4.7 |
+| Anemia | 40/50 (80%) | 31.2% | 2.6 |
+| Hyperlipidemia | 11/50 (22%) | 8.6% | 2.5 |
+| Osteoporosis | 5/50 (10%) | 4.0% | 2.5 |
+| Chronic kidney disease stage 2 | 6/50 (12%) | 5.5% | 2.2 |
+
+**Trajectory** (TemporalGraphAE GRU state after each window, inserted into each year's graph; the same space as the reference patients' trajectories):
+
+| Window | Graph neighbours | Mean similarity | Step from previous year |
+| --- | ---: | ---: | ---: |
+| 2017 | 10 | 0.569 |  |
+| 2018 | 10 | 0.564 | 1.192 |
+| 2019 | 10 | 0.553 | 0.600 |
+| 2020 | 10 | 0.545 | 0.303 |
+| 2021 | 10 | 0.539 | 0.196 |
+| 2022 | 10 | 0.535 | 0.201 |
+
+## 4. Chronic pain and musculoskeletal
+
 Female, born 1944-09-10 (age 78.3 at the cutoff 2023-01-01). 8 history entries; prediction in 0.26 s.
 
 **Conditions used** (onset year; chronic = active from onset through the last window):
@@ -155,6 +245,8 @@ Female, born 1944-09-10 (age 78.3 at the cutoff 2023-01-01). 8 history entries; 
 | 2020 | Hyperlipidemia | 55822004 | yes |
 
 **Nearest phenotype: cluster 4** (279 reference patients). Most over-represented chronic conditions: Chronic neck pain (58% vs 11% overall); Chronic low back pain (84% vs 18% overall); Fibromyalgia (9% vs 2% overall); Chronic pain (98% vs 25% overall); Unhealthy alcohol drinking behavior (14% vs 9% overall).
+
+**At risk for 5 of 9 groups** (ckd, prediabetes, hypertension, metabolic syndrome, substance use). Already has: ischemic heart disease, hyperlipidemia, obesity, chronic pain.
 
 **Supervised `any_onset` probability: 15.7%** (TemporalGCN, Platt-calibrated; test AUROC 0.559 (0.483-0.632), an interval that includes 0.5, so near chance; reference base rate 18.6%).
 

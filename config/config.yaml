@@ -18,6 +18,9 @@ paths:
   clinical_summary_md: reports/clinical_summary.md
   events_per_patient_fig: reports/figures/events_per_patient_hist.png
   top_conditions_fig: reports/figures/top_conditions_bar.png
+  # Patients alive and with an active clinical condition, and clinical events dated, per
+  # year (data.plot_active_patients, written with clinical_summary_md).
+  active_patients_fig: reports/figures/active_patients_per_year.png
   # Phase 2 outputs (trajectories.save_trajectories).
   trajectories_parquet: data/processed/trajectories.parquet
   patient_index_json: data/processed/patient_index.json
@@ -108,6 +111,22 @@ paths:
   next_year_auroc_fig: reports/figures/next_year_auroc.png
   # Phase 8 (scripts/08_predict_demo.py): the example patients' predictions.
   predict_demo_md: reports/predict_demo.md
+  # The hand-written findings of Phases 4-7b (shown on the app's overview page).
+  findings_md: reports/findings.md
+  # Phase 9 app assets (scripts/09_app_assets.py), read by app/streamlit_app.py: the UMAP of
+  # every reference GraphAE state, the chronic comorbidity network (pairs, clusters, layout),
+  # the graph drift between consecutive windows and the dataset statistics.
+  app_dir: artifacts/app
+  app_state_umap_npz: artifacts/app/state_umap.npz
+  app_network_nodes_csv: artifacts/app/comorbidity_nodes.csv
+  app_network_pairs_csv: artifacts/app/comorbidity_pairs.csv
+  app_drift_csv: artifacts/app/graph_drift.csv
+  app_stats_json: artifacts/app/app_stats.json
+  # Phase 10: scripts/run_all.py's timing per step, and the report figures that
+  # scripts/10_final_figures.py copies (numbered, in final_figures order) with their captions.
+  run_all_timing_md: reports/run_all_timing.md
+  final_figures_dir: reports/figures/final
+  final_captions_md: reports/figures/final/captions.md
 
 # Global random seed used by random, numpy and torch.
 seed: 42
@@ -484,9 +503,11 @@ graph_ae:
   # loss; the weights of the best epoch are kept.
   patience: 20
   grad_clip_norm: 1.0
-  # Default weight of the next-window term; scripts/07b_embeddings.py trains its final
-  # models with the tuning choice below.
-  next_window_weight: 1.0
+  # Weight of the next-window term: 2, chosen by the validation next-window-loss search
+  # below (lowest mean over tuning_seeds; artifacts/graph_ae/tuning_runs.csv). Every
+  # reported GraphAE number uses 2. scripts/07b_embeddings.py reruns the search and trains
+  # its final models with the weight it picks.
+  next_window_weight: 2.0
   # Log progress, and the share of variance on the first principal component of the
   # final GRU states (the anti-collapse check), every this many epochs.
   log_every_epochs: 10
@@ -531,11 +552,25 @@ inference:
   # Neighbour outcomes: among this many nearest reference patients, the share with each
   # onset in the label horizon, over those whose label is observed.
   outcome_neighbours: [10, 50]
+  # Optional age filter of the similar patients (Predictor.similar_patients(age_band=...)):
+  # keep reference patients within +/- this many years of the patient's age at
+  # labels.cutoff_date, taking further candidates from the spectral ranking so that
+  # n_similar remain. A post-filter: the graphs and the embeddings never change. The app's
+  # age-band toggle uses this band.
+  age_band_years: 10
   # explain(): lift of the patient's chronic conditions among this many nearest reference
   # patients over all reference patients; the explain_top highest are listed.
   explain_neighbours: 50
   explain_top: 5
+  # predict_demo.md: where the elderly multimorbid reference patients fall, those at least
+  # elderly_min_age years old at the cutoff with at least elderly_min_chronic chronic
+  # conditions in 2017-2022.
+  elderly_min_age: 75
+  elderly_min_chronic: 6
   # Example patients of scripts/08_predict_demo.py; history entries are [onset year, code].
+  # They are realistic profiles, not chosen to land in different phenotypes: the
+  # multimorbid elderly patient falls in phenotype 2 with the metabolic-syndrome pattern, as
+  # do most elderly multimorbid reference patients (cardio-metabolic continuum).
   demo_patients:
     - name: Healthy young adult
       birth_date: 1999-03-15
@@ -556,11 +591,21 @@ inference:
         - [2019, "444814009"]  # Viral sinusitis
         - [2019, "59621000"]  # Essential hypertension
         - [2021, "237602007"]  # Metabolic syndrome X
-    # Pain- and musculoskeletal-dominated. A cardiometabolic elderly history (hypertension,
-    # diabetes, CKD, heart failure) falls in phenotype 2 with the metabolic-syndrome pattern,
-    # as do 132 of the 173 reference patients aged 75+ with 6+ chronic conditions; this one
-    # falls in phenotype 4 (11 of the 173), so the three examples differ.
     - name: Multimorbid elderly
+      birth_date: 1944-09-10
+      sex: F
+      history:
+        - [2010, "59621000"]  # Essential hypertension
+        - [2012, "55822004"]  # Hyperlipidemia
+        - [2014, "44054006"]  # Diabetes mellitus type 2
+        - [2016, "414545008"]  # Ischemic heart disease
+        - [2017, "239873007"]  # Osteoarthritis of knee
+        - [2018, "431856006"]  # Chronic kidney disease stage 2
+        - [2019, "271737000"]  # Anemia
+        - [2020, "64859006"]  # Osteoporosis
+        - [2021, "88805009"]  # Chronic congestive heart failure
+    # Pain- and musculoskeletal-dominated elderly history.
+    - name: Chronic pain and musculoskeletal
       birth_date: 1944-09-10
       sex: F
       history:
@@ -572,6 +617,33 @@ inference:
         - [2018, "64859006"]  # Osteoporosis
         - [2019, "271737000"]  # Anemia
         - [2020, "55822004"]  # Hyperlipidemia
+
+# Phase 9 Streamlit app (app/streamlit_app.py) and its assets (scripts/09_app_assets.py).
+# The app trains nothing: it loads inference.Predictor once and the saved assets.
+app:
+  # The reference map: one UMAP (embedding_analysis settings) of every non-empty
+  # patient-window's TemporalGraphAE state, as in Phase 7b. A new patient's state after each
+  # window is drawn at the mean map position of its this-many nearest reference states
+  # (Euclidean, in the 32-d state space); the UMAP itself is never refitted.
+  map_neighbours: 10
+  # Similarity graph over time: this many reference patients, drawn once with the global
+  # seed, shown in every year at their 2022 position on the reference map.
+  graph_sample_patients: 400
+  # Comorbidity network: chronic codes in at least summary.chronic_min_patients patients,
+  # pairs from the Phase 3 chronic comorbidity counts, codes on a circle in the dendrogram's
+  # leaf order. Codes are coloured by the Phase 3 heatmap clustering (average linkage of the
+  # clipped log2 lift profiles, here of these 44 codes), cut into network_clusters branches.
+  # Average linkage chains peripheral codes off one at a time, so the cut keeps four
+  # multi-code clusters (cardio-metabolic and renal 21, pain/migraine/drug use 8, anxiety/
+  # alcohol/neck pain 3, sleep 2) at 14 branches; branches with fewer than
+  # network_min_cluster_size codes are shown as unclustered.
+  network_clusters: 14
+  network_min_cluster_size: 2
+  # The network page's default filters: minimum lift and minimum patients with the pair.
+  network_min_lift: 2.0
+  network_min_patients: 30
+  # Condition timeline: episodes shorter than this are drawn this long, so they stay visible.
+  timeline_min_days: 30
 
 # Patient-level split of the model cohort (labels.stratified_split), stratified by
 # Phase 4 phenotype cluster x any_onset label (masked is its own value), drawn with the
@@ -588,9 +660,16 @@ summary:
   # Age-group edges in completed years, left-closed; .inf leaves the last group open.
   age_bins: [0, 18, 30, 45, 65, 80, .inf]
   events_hist_bins: 40
+  # Figure layout: sizes given in pixels (line widths, bar thickness, cell gaps) are
+  # pixels at figure_dpi. PNGs are written at figure_save_dpi, so a figure saved at 300
+  # looks the same as at 150, with twice the resolution.
   figure_dpi: 150
+  figure_save_dpi: 300
   # Years with fewer patients with an active clinical condition are flagged.
   min_active_patients_per_year: 500
+  # The active-patients figure starts this many years before trajectories.start_year, to
+  # show where Synthea's export history begins.
+  active_patients_history_years: 10
   # Patients drawn at random (with the global seed) for the trajectory examples.
   example_patients: 3
   top_n_transitions: 10
@@ -606,3 +685,93 @@ summary:
   # chronic_min_patients); colour clipped to lift 2^-limit .. 2^limit.
   heatmap_codes: 30
   heatmap_log2_lift_limit: 3.0
+
+# Phase 10 report figures (scripts/10_final_figures.py): copied in this order to
+# paths.final_figures_dir as <number>_<name>.png, with captions.md. source names a figure
+# path of the paths section; each must have been saved at summary.figure_save_dpi.
+final_figures:
+  figures:
+    - source: top_conditions_fig
+      name: data_top_conditions
+      caption: >-
+        The 20 most common condition codes in the raw Synthea export (3,000 patients), by
+        number of patients. Social, administrative and situation codes (medication review,
+        employment, stress, social isolation) are among the most common, which is why a
+        clinical code filter (data.code_filter) keeps only disorders and a reviewed whitelist.
+    - source: events_per_patient_fig
+      name: data_events_per_patient
+      caption: >-
+        Condition events per patient in the raw export, every code, before the clinical
+        filter (median 29, long right tail).
+    - source: active_patients_fig
+      name: active_patients_per_year
+      caption: >-
+        Top: patients alive and patients with an active clinical condition (active from onset
+        to STOP or death) per year. Bottom: clinical events dated in each year. Events dated
+        rise from about 400 a year to about 2,500 a year from 2017 (apart from a spike in
+        2014): Synthea exports a full record only for the 10 years before its run date, so
+        earlier years hold mostly conditions that were still open. The windows therefore
+        start in 2017. Shaded: feature windows 2017-2022 and label windows 2023-2025.
+    - source: comorbidity_heatmap_fig
+      name: comorbidity_lift_heatmap
+      caption: >-
+        Comorbidity lift (observed over expected number of patients with both conditions
+        active in the same window, log scale clipped to 1/8-8) between the 30 most common
+        chronic conditions, 2017-2022. Rows and columns are ordered by average-linkage
+        clustering of the lift profiles. Blocks: diabetic kidney disease (CKD stages 1-2,
+        microalbuminuria, proteinuria), cardio-metabolic disease (metabolic syndrome, type 2
+        diabetes, hypertriglyceridaemia, ischaemic heart disease, bypass grafting), and
+        chronic pain with migraine and drug abuse.
+    - source: eigenvalues_fig
+      name: laplacian_eigenvalues
+      caption: >-
+        The 20 smallest eigenvalues of the normalized Laplacian L = I - A_hat of the 2022
+        k-NN patient-similarity graph (k = 10, 2,581 patients). The largest gap (k >= 2)
+        follows the 7th eigenvalue, so the spectral clustering uses 7 phenotypes. The smooth
+        rise (0.028 at i = 2 to 0.126 at i = 20) means the phenotypes partition a continuum
+        rather than separate communities.
+    - source: graph_drift_fig
+      name: graph_drift
+      caption: >-
+        Neighbourhood overlap (Jaccard of the k-NN neighbour sets) between consecutive yearly
+        graphs: mean over patients and interquartile range. The mean rises from 0.405
+        (2017 to 2018) to 0.604 (2021 to 2022), with no jump: neighbourhoods stabilise as
+        histories accumulate.
+    - source: ae_umap_phenotype_fig
+      name: graphae_umap_phenotypes
+      caption: >-
+        UMAP of the self-supervised TemporalGraphAE trajectory embeddings (final GRU state,
+        32 dimensions), one panel per Phase 4 spectral phenotype (blue; grey: every other
+        patient). Phenotypes 1, 2, 4 and 5 occupy distinct regions; 3 spreads across the
+        middle and 7 (47 patients) is scattered. Silhouette against the phenotypes -0.012
+        (shuffled labels -0.181): better than chance, but the clusters touch.
+    - source: ae_trajectory_fig
+      name: graphae_trajectories
+      caption: >-
+        The TemporalGraphAE state after each year 2017-2022 for 5 patients, on one UMAP of
+        every non-empty patient-window; orange marks a year with a new chronic condition.
+        The mean yearly step in the 32-dimensional space shrinks from 1.382 (2017 to 2018) to
+        0.267 (2021 to 2022): the long first steps are mostly the GRU state settling, and
+        later moves coincide with new chronic onsets.
+    - source: cv_auroc_fig
+      name: cv_auroc
+      caption: >-
+        Left: pooled out-of-fold AUROC of any_onset (a new chronic onset in 2023-2025) for
+        the 8 models of the 5-fold cross-validation (2,221 patients, 414 positives), with
+        95% percentile bootstrap intervals. Right: the paired difference from the full
+        TemporalGCN. All models lie between 0.553 and 0.585, and no difference is shown.
+    - source: next_year_auroc_fig
+      name: next_year_auroc
+      caption: >-
+        New conditions in 2022 predicted from each 2021 embedding (one logistic regression
+        per code, test patients). Left: micro AUROC over every patient-code pair; the dashed
+        line is the codes' base rates alone (0.760). Right: macro AUROC, the mean over codes.
+        The base rates explain the pooled AUROC; within a code the embeddings rank patients
+        at 0.503-0.624.
+    - source: test_reliability_fig
+      name: reliability_test
+      caption: >-
+        Reliability of the final TemporalGCN's any_onset probabilities on the held-out test
+        set (330 patients, 61 positives, 10 equal-count bins), before and after Platt scaling
+        fitted on the validation split (a = 0.796, b = -1.272). Test AUROC 0.559
+        (0.483-0.632); Brier 0.155 against 0.151 for always predicting the base rate.

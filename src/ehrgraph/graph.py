@@ -709,7 +709,7 @@ def plot_eigenvalues(spectrum: Spectrum, path: Path, cfg: Config) -> None:
     px = _POINTS_PER_INCH / dpi
     index = np.arange(1, len(spectrum.eigenvalues) + 1)
     k = spectrum.suggested_k
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=_FIG_SIZE_IN, layout="constrained")
         ax = fig.subplots()
         ax.plot(
@@ -758,7 +758,7 @@ def plot_drift(drift: pd.DataFrame, path: Path, cfg: Config) -> None:
     px = _POINTS_PER_INCH / dpi
     x = np.arange(len(drift))
     labels = [f"{a}→{b}" for a, b in zip(drift["from_year"], drift["to_year"])]
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=_FIG_SIZE_IN, layout="constrained")
         ax = fig.subplots()
         ax.fill_between(x, drift["q25"], drift["q75"], color=_SERIES_COLOR, alpha=_BAND_ALPHA,

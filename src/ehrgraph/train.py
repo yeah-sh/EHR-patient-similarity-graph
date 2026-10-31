@@ -996,7 +996,7 @@ def plot_training_curves(history: pd.DataFrame, best_epoch: int, path: Path, cfg
         ("Loss (eval mode)", "train_loss", "val_loss", "Loss"),
         (f"AUROC of {ANY_ONSET}", "train_auroc", "val_auroc", "AUROC"),
     ]
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=_FIG_SIZE_IN, layout="constrained")
         axes = fig.subplots(1, 2, sharex=True)
         for ax, (title, train_column, val_column, ylabel) in zip(axes, panels):

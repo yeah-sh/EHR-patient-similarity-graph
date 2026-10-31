@@ -40,6 +40,7 @@ class PathsConfig:
     clinical_summary_md: Path
     events_per_patient_fig: Path
     top_conditions_fig: Path
+    active_patients_fig: Path
     trajectories_parquet: Path
     patient_index_json: Path
     code_vocabulary_json: Path
@@ -104,6 +105,16 @@ class PathsConfig:
     ae_trajectory_fig: Path
     next_year_auroc_fig: Path
     predict_demo_md: Path
+    findings_md: Path
+    app_dir: Path
+    app_state_umap_npz: Path
+    app_network_nodes_csv: Path
+    app_network_pairs_csv: Path
+    app_drift_csv: Path
+    app_stats_json: Path
+    run_all_timing_md: Path
+    final_figures_dir: Path
+    final_captions_md: Path
 
 
 @dataclass(frozen=True)
@@ -349,9 +360,25 @@ class InferenceConfig:
     chronic_default_share: float
     n_similar: int
     outcome_neighbours: tuple[int, ...]
+    age_band_years: int
     explain_neighbours: int
     explain_top: int
+    elderly_min_age: int
+    elderly_min_chronic: int
     demo_patients: tuple[DemoPatientConfig, ...]
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    """Phase 9 Streamlit app (``app/streamlit_app.py``) and its assets (``scripts/09_app_assets.py``)."""
+
+    map_neighbours: int
+    graph_sample_patients: int
+    network_clusters: int
+    network_min_cluster_size: int
+    network_min_lift: float
+    network_min_patients: int
+    timeline_min_days: int
 
 
 @dataclass(frozen=True)
@@ -371,7 +398,9 @@ class SummaryConfig:
     age_bins: tuple[float, ...]
     events_hist_bins: int
     figure_dpi: int
+    figure_save_dpi: int
     min_active_patients_per_year: int
+    active_patients_history_years: int
     example_patients: int
     top_n_transitions: int
     comorbidity_top_pairs: int
@@ -380,6 +409,26 @@ class SummaryConfig:
     chronic_pair_min_patients: int
     heatmap_codes: int
     heatmap_log2_lift_limit: float
+
+
+@dataclass(frozen=True)
+class FinalFigureConfig:
+    """One report figure of ``scripts/10_final_figures.py``.
+
+    ``source`` names a figure path of ``PathsConfig``; ``name`` is the exported file's stem
+    (after its number).
+    """
+
+    source: str
+    name: str
+    caption: str
+
+
+@dataclass(frozen=True)
+class FinalFiguresConfig:
+    """The report figures, in report order (``scripts/10_final_figures.py``)."""
+
+    figures: tuple[FinalFigureConfig, ...]
 
 
 @dataclass(frozen=True)
@@ -403,8 +452,10 @@ class Config:
     graph_ae: GraphAEConfig
     embedding_eval: EmbeddingEvalConfig
     inference: InferenceConfig
+    app: AppConfig
     split: SplitConfig
     summary: SummaryConfig
+    final_figures: FinalFiguresConfig
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -640,13 +691,35 @@ def _validate(config: Config) -> None:
         raise ValueError(f"embedding_eval: these values must be positive: {bad}")
 
     inference = config.inference
-    counts = ("n_similar", "explain_neighbours", "explain_top")
+    counts = ("n_similar", "age_band_years", "explain_neighbours", "explain_top",
+              "elderly_min_age", "elderly_min_chronic")
     bad = [name for name in counts if getattr(inference, name) < 1]
     if not inference.outcome_neighbours or min(inference.outcome_neighbours) < 1:
         bad.append("outcome_neighbours")
     if bad or not 0.0 < inference.chronic_default_share <= 1.0:
         raise ValueError(f"inference: these values must be positive: {bad}; "
                          "chronic_default_share must lie in (0, 1]")
+
+    app = config.app
+    counts = ("map_neighbours", "graph_sample_patients", "network_clusters",
+              "network_min_cluster_size", "network_min_patients", "timeline_min_days")
+    bad = [name for name in counts if getattr(app, name) < 1]
+    if bad or app.network_min_lift <= 0:
+        raise ValueError(f"app: these values must be positive: {bad}; network_min_lift > 0")
+
+    summary = config.summary
+    counts = ("figure_dpi", "figure_save_dpi", "active_patients_history_years")
+    bad = [name for name in counts if getattr(summary, name) < 1]
+    if bad:
+        raise ValueError(f"summary: these values must be positive: {bad}")
+
+    figures = config.final_figures.figures
+    path_names = {f.name for f in fields(PathsConfig)}
+    unknown = [f.source for f in figures if f.source not in path_names]
+    names = [f.name for f in figures]
+    if not figures or unknown or len(set(names)) != len(names):
+        raise ValueError(f"final_figures.figures must not be empty, name only paths keys "
+                         f"(unknown: {unknown}) and have unique names")
 
     # A canonical code that is itself merged would make the result depend on order.
     code_merge = config.data.code_merge

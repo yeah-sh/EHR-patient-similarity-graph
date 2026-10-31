@@ -1,11 +1,13 @@
-"""Phase 8 demo: place three example patients among the reference patients and show the results.
+"""Phase 8 demo: place the example patients among the reference patients and show the results.
 
 Loads the predictor once (inference.Predictor), predicts the inference.demo_patients of
 config/config.yaml (a healthy young adult, a metabolic-syndrome pattern, a multimorbid
-elderly patient) and logs each result: the nearest phenotype, the most similar reference
-patients and their shared chronic conditions, the neighbours' onsets in 2023-2025, the
-supervised model's calibrated any_onset probability, the explanation (lift) and the
-trajectory. The same text goes to reports/predict_demo.md::
+elderly patient, a chronic-pain and musculoskeletal patient: realistic profiles, not chosen
+to land in different phenotypes) and logs each result: the nearest phenotype, the risk set
+(the onset groups the patient does not already have), the most similar reference patients
+and their shared chronic conditions, the neighbours' onsets in 2023-2025, the supervised
+model's calibrated any_onset probability, the explanation (lift) and the trajectory. The
+same text, with a summary table, goes to reports/predict_demo.md::
 
     conda run -n ehrgraph python scripts/08_predict_demo.py [--config PATH]
 """
@@ -21,7 +23,13 @@ import pandas as pd
 
 from ehrgraph.config import DEFAULT_CONFIG_PATH, Config, DemoPatientConfig
 from ehrgraph.data import DAYS_PER_YEAR, markdown_table
-from ehrgraph.inference import NewPatient, Prediction, Predictor, format_share
+from ehrgraph.inference import (
+    RISK_SET_EXPLANATION,
+    NewPatient,
+    Prediction,
+    Predictor,
+    format_share,
+)
 from ehrgraph.labels import ANY_ONSET
 from ehrgraph.utils import get_logger, set_seed
 
@@ -57,6 +65,8 @@ def patient_section(
     phenotype = prediction.phenotype
     lines += [f"**Nearest phenotype: cluster {phenotype.cluster}** ({phenotype.patients} reference "
               f"patients). Most over-represented chronic conditions: {phenotype.description}.", ""]
+    lines += [f"**{prediction.risk_set}** ({group_list(prediction.at_risk_groups)}). Already "
+              f"has: {group_list(prediction.prior_groups)}.", ""]
 
     probability = prediction.any_onset_probability
     any_row = prediction.outcomes.set_index("target").loc[ANY_ONSET]
@@ -122,10 +132,47 @@ def patient_section(
     return "\n".join(lines)
 
 
-def report(sections: list[str], predictor: Predictor, load_seconds: float, cfg: Config) -> str:
+def group_list(groups: tuple[str, ...]) -> str:
+    """Onset groups in words, e.g. "ckd, ischemic heart disease", or "none"."""
+    return ", ".join(group.replace("_", " ") for group in groups) or "none"
+
+
+def elderly_multimorbid_line(predictor: Predictor) -> str:
+    """Where the elderly multimorbid reference patients fall (``inference.elderly_min_*``)."""
+    inf = predictor.cfg.inference
+    ages = predictor.demographics["age"].to_numpy(dtype=float)
+    chronic = np.diff(predictor.chronic.indptr)
+    elderly = (ages >= inf.elderly_min_age) & (chronic >= inf.elderly_min_chronic)
+    counts = pd.Series(predictor.clusters[elderly]).value_counts()
+    return (f"Phenotype {int(counts.index[0])} holds {int(counts.iloc[0])} of the "
+            f"{int(elderly.sum())} reference patients aged {inf.elderly_min_age}+ with "
+            f"{inf.elderly_min_chronic}+ chronic conditions (a cardio-metabolic continuum).")
+
+
+def summary_table(demos: list[DemoPatientConfig], predictions: list[Prediction],
+                  cfg: Config) -> str:
+    """One row per example patient: phenotype, risk set and neighbour any_onset rates."""
+    sizes = cfg.inference.outcome_neighbours
+    rows = []
+    for number, (demo, prediction) in enumerate(zip(demos, predictions), start=1):
+        any_row = prediction.outcomes.set_index("target").loc[ANY_ONSET]
+        rows.append([
+            str(number), demo.name,
+            str(prediction.phenotype.cluster) if prediction.placed else "-",
+            prediction.risk_set.removeprefix("At risk for "),
+            *[format_share(any_row[f"positives_{n}"], any_row[f"observed_{n}"]) for n in sizes],
+            format_share(any_row["positives_all"], any_row["observed_all"]),
+        ])
+    return markdown_table(["#", "Patient", "Phenotype", "At risk for",
+                           *[f"Neighbour any_onset, {n} nearest" for n in sizes],
+                           "All reference patients"], rows, "llrl" + "r" * (len(sizes) + 1))
+
+
+def report(sections: list[str], summary: str, predictor: Predictor, load_seconds: float,
+           cfg: Config) -> str:
     """The whole demo report."""
     header = [
-        "# Phase 8: predictions for three example patients", "",
+        f"# Phase 8: predictions for {len(sections)} example patients", "",
         "Built by `scripts/08_predict_demo.py` with `inference.Predictor`. Each patient is placed "
         f"among the {len(predictor.patient_ids):,} reference (model-cohort) patients without "
         "refitting anything: features from the saved transforms; in each year's k-NN graph "
@@ -134,6 +181,15 @@ def report(sections: list[str], predictor: Predictor, load_seconds: float, cfg: 
         f"them in the {cfg.labels.cutoff_date.year - 1} spectral embedding, where the phenotype, "
         "the similar patients and the neighbour outcomes are read. "
         f"Predictor loaded in {load_seconds:.2f} s. Synthetic data (Synthea).", "",
+        "The examples are realistic profiles, not chosen to land in different phenotypes: the "
+        "multimorbid elderly patient lands in the same phenotype as the metabolic-syndrome "
+        f"pattern. {elderly_multimorbid_line(predictor)}", "",
+        summary, "",
+        f"**Risk set.** `{ANY_ONSET}` is a new onset in {cfg.labels.cutoff_date.year}-"
+        f"{cfg.labels.cutoff_date.year + cfg.labels.horizon_years - 1} in any of the "
+        f"{len(cfg.labels.onset_groups)} onset groups; a group a patient already has is masked, so "
+        "each neighbour counts only for the groups they were still at risk of. "
+        f"{RISK_SET_EXPLANATION}", "",
     ]
     return "\n".join(header + sections)
 
@@ -151,8 +207,9 @@ def main(argv: list[str] | None = None) -> None:
     cfg = predictor.cfg
     set_seed(cfg.seed)
 
-    sections = []
-    for number, demo in enumerate(cfg.inference.demo_patients, start=1):
+    sections, predictions = [], []
+    demos = list(cfg.inference.demo_patients)
+    for number, demo in enumerate(demos, start=1):
         patient = NewPatient(history=list(demo.history), birth_date=demo.birth_date, sex=demo.sex)
         started = perf_counter()
         prediction = predictor.predict(patient)
@@ -161,10 +218,13 @@ def main(argv: list[str] | None = None) -> None:
         section = patient_section(number, demo, prediction, explanation, predictor, seconds)
         logger.info("Example patient %d:\n%s", number, section)
         sections.append(section)
+        predictions.append(prediction)
+    summary = summary_table(demos, predictions, cfg)
+    logger.info("Summary:\n%s", summary)
 
     path = cfg.paths.predict_demo_md
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(report(sections, predictor, load_seconds, cfg), encoding="utf-8")
+    path.write_text(report(sections, summary, predictor, load_seconds, cfg), encoding="utf-8")
     logger.info("Wrote %s", path)
 
 

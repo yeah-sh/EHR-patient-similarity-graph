@@ -942,7 +942,7 @@ def plot_next_year_auroc(
     panels = [("Micro AUROC (every patient-code pair)", "next_micro", base_rate_micro,
                "code base rates only"),
               ("Macro AUROC (mean over codes)", "next_macro", None, None)]
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=(11.0, len(rows) * row_in + _CHROME_IN), layout="constrained")
         axes = fig.subplots(1, 2, sharey=True)
         for ax, (title, column, reference, reference_label) in zip(axes, panels):

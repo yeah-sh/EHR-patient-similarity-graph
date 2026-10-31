@@ -942,7 +942,7 @@ def plot_reliability_bins(
         (bins_after, after_label, _AFTER_COLOR),
     ]
     limit = 1.0  # probabilities: the full unit square
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=_FIG_SIZE_IN, layout="constrained")
         ax = fig.subplots()
         ax.plot([0, limit], [0, limit], color=_BASELINE, linewidth=px, linestyle=":")
@@ -1744,7 +1744,7 @@ def plot_cv_auroc(table: pd.DataFrame, path: Path, cfg: Config) -> None:
         ("Full TemporalGCN minus this model", f"Difference in AUROC ({level} CI, paired)",
          "delta_auroc", 0.0, True),
     ]
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=(11.0, _ROW_IN * len(rows) + 1.4), layout="constrained")
         axes = fig.subplots(1, 2, sharey=True)
         for ax, (title, xlabel, column, reference, signed) in zip(axes, panels):
@@ -2437,7 +2437,7 @@ def plot_umap_facets(
     dpi = cfg.summary.figure_dpi
     ncols = 4 if len(order) > 6 else 3
     nrows = math.ceil(len(order) / ncols)
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=(_PANEL_IN * ncols, _PANEL_IN * nrows + 0.5), layout="constrained")
         axes = fig.subplots(nrows, ncols, squeeze=False, sharex=True, sharey=True)
         for ax, category in zip(axes.flat, order):
@@ -2501,7 +2501,7 @@ def plot_window_paths(
     span = np.ptp(background, axis=0)
     ncols = 3
     nrows = math.ceil((len(nodes) + 1) / ncols)
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=(5.0 * ncols, 4.8 * nrows), layout="constrained")
         axes = fig.subplots(nrows, ncols, squeeze=False)
         for ax, node in zip(axes.flat, nodes):

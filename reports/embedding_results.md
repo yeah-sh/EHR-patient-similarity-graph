@@ -39,8 +39,8 @@ Link AUROC: edges vs one fixed draw of non-edges, by `z_i . z_j`, mean over wind
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | i. TemporalGraphAE | 23 | 43 | 1.0645 | 0.942 | 64.7% | 12 |
 | vi. GraphAE, no graph | 30 | 50 | 0.8623 | n/a (no edges) | 46.2% | 4 |
-| vii. GraphAE, rewired graphs | 45 | 65 | 1.1528 | 0.598 | 83.2% | 16 |
-| viii. GraphAE, link only | 53 | 73 | 1.1226 | 0.967 | 24.0% | 19 |
+| vii. GraphAE, rewired graphs | 45 | 65 | 1.1528 | 0.598 | 83.2% | 19 |
+| viii. GraphAE, link only | 53 | 73 | 1.1226 | 0.967 | 24.0% | 20 |
 
 Anti-collapse check of the final GraphAE, logged during training (all patients):
 
@@ -64,7 +64,7 @@ Next year: new conditions in 2022 from the 2021 embedding, 12 codes, 3,436 test 
 | iv. Spectral embedding | real (2022 only) | none (unsupervised) | 0.713 (0.672 to 0.753) | 0.548 (0.472 to 0.587) | 0.431 (0.408 to 0.455) | 0.058 | 2.89 | 3.1% | 0.562 (0.533 to 0.592) | -0.023 (-0.048 to +0.004) |
 | v. Supervised TemporalGCN h | real | supervised: any_onset (training split) * | 0.753 (0.712 to 0.798) | 0.503 (0.448 to 0.567) | 0.143 (0.130 to 0.156) | -0.388 | 11.67 | 99.8% | 0.691 (0.667 to 0.714) * | +0.106 (+0.080 to +0.132) |
 | vi. GraphAE, no graph | none | self-supervised: next-window only | 0.766 (0.731 to 0.802) | 0.624 (0.559 to 0.673) | 0.318 (0.297 to 0.340) | -0.067 | 2.24 | 46.2% | 0.531 (0.500 to 0.563) | -0.054 (-0.091 to -0.019) |
-| vii. GraphAE, rewired graphs | random | self-supervised: link + next-window | 0.769 (0.729 to 0.807) | 0.557 (0.481 to 0.627) | 0.123 (0.111 to 0.134) | -0.257 | 10.21 | 83.2% | 0.468 (0.437 to 0.501) | -0.117 (-0.160 to -0.074) |
+| vii. GraphAE, rewired graphs | random | self-supervised: link + next-window | 0.769 (0.729 to 0.807) | 0.557 (0.481 to 0.627) | 0.123 (0.111 to 0.134) | -0.257 | 10.21 | 83.2% | 0.468 (0.437 to 0.501) | -0.117 (-0.160 to -0.075) |
 | viii. GraphAE, link only | real | self-supervised: link only | 0.742 (0.701 to 0.779) | 0.574 (0.485 to 0.622) | 0.403 (0.379 to 0.426) | 0.048 | 2.17 | 24.0% | 0.586 (0.556 to 0.615) | +0.001 (-0.027 to +0.027) |
 
 \* v was trained on the `any_onset` labels of the training split, who are in the probe's held-out folds: its probe AUROC is optimistic. Its clean cross-validated AUROC is Phase 7's model 8: 0.579 (0.549 to 0.608).
@@ -75,19 +75,19 @@ Positive: the GraphAE is better (for concordance and AUROC, higher is better).
 
 | Question | Comparison | Next-year micro AUROC | Next-year macro AUROC | Neighbour concordance | Probe AUROC |
 | --- | --- | --- | --- | --- | --- |
-| Does the graph help? | i - vi. GraphAE, no graph | -0.010 (-0.041 to +0.019) | -0.054 (-0.129 to +0.036) | +0.040 (+0.020 to +0.060) **shown** | +0.050 (+0.009 to +0.085) **shown** |
-| Is the real graph better than a random one? | i - vii. GraphAE, rewired graphs | -0.013 (-0.044 to +0.017) | +0.014 (-0.090 to +0.121) | +0.235 (+0.213 to +0.256) **shown** | +0.113 (+0.072 to +0.154) **shown** |
-| Does the temporal (next-window) objective help? | i - viii. GraphAE, link only | +0.014 (-0.008 to +0.034) | -0.004 (-0.046 to +0.084) | -0.046 (-0.062 to -0.030) **shown** | -0.005 (-0.036 to +0.025) |
-| Does the GraphAE beat PCA of the final window? | i - ii. PCA, final window | +0.003 (-0.023 to +0.028) | -0.054 (-0.109 to +0.047) | -0.036 (-0.053 to -0.019) **shown** | +0.006 (-0.029 to +0.038) |
-| Does the GraphAE beat PCA of every window? | i - iii. PCA, every window | +0.028 (-0.001 to +0.058) | +0.000 (-0.054 to +0.087) | -0.057 (-0.077 to -0.037) **shown** | +0.023 (-0.011 to +0.052) |
-| Does the GraphAE beat the spectral embedding? | i - iv. Spectral embedding | +0.043 (+0.017 to +0.068) **shown** | +0.023 (-0.042 to +0.116) | -0.074 (-0.095 to -0.055) **shown** | +0.019 (-0.010 to +0.046) |
-| Does the GraphAE beat the supervised TemporalGCN's h? | i - v. Supervised TemporalGCN h | +0.002 (-0.032 to +0.037) | +0.068 (-0.036 to +0.165) | +0.215 (+0.189 to +0.240) **shown** | -0.110 (-0.142 to -0.080) **shown** |
+| Does the graph help? | i - vi. GraphAE, no graph | -0.011 (-0.041 to +0.019) | -0.054 (-0.129 to +0.036) | +0.040 (+0.020 to +0.060) **shown** | +0.050 (+0.009 to +0.085) **shown** |
+| Is the real graph better than a random one? | i - vii. GraphAE, rewired graphs | -0.014 (-0.044 to +0.017) | +0.014 (-0.091 to +0.121) | +0.235 (+0.213 to +0.256) **shown** | +0.113 (+0.073 to +0.154) **shown** |
+| Does the temporal (next-window) objective help? | i - viii. GraphAE, link only | +0.014 (-0.008 to +0.034) | -0.004 (-0.047 to +0.084) | -0.046 (-0.062 to -0.030) **shown** | -0.005 (-0.036 to +0.025) |
+| Does the GraphAE beat PCA of the final window? | i - ii. PCA, final window | +0.003 (-0.023 to +0.028) | -0.054 (-0.108 to +0.047) | -0.036 (-0.053 to -0.019) **shown** | +0.006 (-0.029 to +0.038) |
+| Does the GraphAE beat PCA of every window? | i - iii. PCA, every window | +0.028 (-0.001 to +0.057) | +0.000 (-0.054 to +0.088) | -0.057 (-0.077 to -0.037) **shown** | +0.023 (-0.011 to +0.053) |
+| Does the GraphAE beat the spectral embedding? | i - iv. Spectral embedding | +0.042 (+0.016 to +0.067) **shown** | +0.023 (-0.042 to +0.117) | -0.074 (-0.095 to -0.055) **shown** | +0.019 (-0.010 to +0.046) |
+| Does the GraphAE beat the supervised TemporalGCN's h? | i - v. Supervised TemporalGCN h | +0.002 (-0.032 to +0.037) | +0.068 (-0.037 to +0.165) | +0.215 (+0.189 to +0.240) **shown** | -0.110 (-0.142 to -0.080) **shown** |
 
 ## Next-year new conditions
 
 A code counts as new in 2022 for a patient whose first-ever event of it falls in 2022; patients with an earlier event of it, not yet born or already dead on 2022-01-01 are not at risk of it. Codes with at least 20 new onsets among training-split patients at risk are kept. One logistic regression per code (C 1.0, unweighted classes, inputs standardized on the training split) is fitted on training-split patients at risk and scored on test-split patients at risk. Micro AUROC pools every test (patient, code) pair; macro averages the per-code AUROC over the codes with a test onset. Bootstrap resamples with both classes: 1000.
 
-**Read the micro AUROC against the codes' base rates.** Scoring every patient by each code's training onset rate, with no patient information at all, already gives a micro AUROC of 0.760 (0.719 to 0.802) (macro 0.5 by construction): pooling codes rewards knowing which codes are common. The GraphAE minus base rates: -0.005 (-0.034 to +0.026). The macro AUROC, the ranking of patients within each code, is the measure of what an embedding knows about the patient.
+**Read the micro AUROC against the codes' base rates.** Scoring every patient by each code's training onset rate, with no patient information at all, already gives a micro AUROC of 0.760 (0.719 to 0.802) (macro 0.5 by construction): pooling codes rewards knowing which codes are common. The GraphAE minus base rates: -0.005 (-0.035 to +0.026). The macro AUROC, the ranking of patients within each code, is the measure of what an embedding knows about the patient.
 
 | Condition | Train onsets | Test onsets / at risk | i | ii | iii | iv | v | vi | vii | viii |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -149,7 +149,7 @@ Phase 7's protocol and folds: 5-fold cross-validation over every patient with an
 | iv. Spectral embedding | 0.562 (0.533 to 0.592) | -0.023 (-0.048 to +0.004) | 0 of 5 | 0.563 |
 | v. Supervised TemporalGCN h * | 0.691 (0.667 to 0.714) | +0.106 (+0.080 to +0.132) **shown** | 0 of 5 | 0.693 |
 | vi. GraphAE, no graph | 0.531 (0.500 to 0.563) | -0.054 (-0.091 to -0.019) **shown** | 1 of 5 | 0.539 |
-| vii. GraphAE, rewired graphs | 0.468 (0.437 to 0.501) | -0.117 (-0.160 to -0.074) **shown** | 3 of 5 | 0.546 |
+| vii. GraphAE, rewired graphs | 0.468 (0.437 to 0.501) | -0.117 (-0.160 to -0.075) **shown** | 3 of 5 | 0.546 |
 | viii. GraphAE, link only | 0.586 (0.556 to 0.615) | +0.001 (-0.027 to +0.027) | 0 of 5 | 0.585 |
 | Phase 7 model 2 (2022 features + age, sex) | 0.585 (0.556 to 0.614) | reference | 0 of 5 | 0.587 |
 

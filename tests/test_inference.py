@@ -23,8 +23,10 @@ from ehrgraph.inference import (
     Prediction,
     Predictor,
     condition_lift,
+    cosine_ranking,
     format_share,
     insert_node,
+    map_positions,
     nearest_reference,
     nystrom_extension,
     outcome_counts,
@@ -344,8 +346,138 @@ def test_demographics_are_needed_only_for_the_probability(predictor: Predictor) 
         predictor.predict(NewPatient(patient.history, patient.birth_date, "X"))
 
 
-def test_the_demo_patients_differ(predictor: Predictor) -> None:
+def test_the_demo_patients_are_placed_with_distinct_neighbours(predictor: Predictor) -> None:
+    # Realistic profiles, not chosen to land in different phenotypes: only their
+    # neighbourhoods must differ.
     predictions = [predictor.predict(_demo(predictor, i))
                    for i in range(len(predictor.cfg.inference.demo_patients))]
-    assert len({p.phenotype.cluster for p in predictions}) == len(predictions)
     assert all(p.placed and p.any_onset_probability is not None for p in predictions)
+    neighbour_sets = {frozenset(p.similar["patient_id"]) for p in predictions}
+    assert len(neighbour_sets) == len(predictions)
+
+
+# --- Risk set ----------------------------------------------------------------------------
+
+
+def test_risk_set_is_the_groups_not_already_had(predictor: Predictor) -> None:
+    groups = tuple(predictor.cfg.labels.onset_groups)
+    elderly = predictor.predict(_demo(predictor, 2))
+    assert set(elderly.at_risk_groups) | set(elderly.prior_groups) == set(groups)
+    assert not set(elderly.at_risk_groups) & set(elderly.prior_groups)
+    assert elderly.at_risk_groups == tuple(g for g in groups if g not in elderly.prior_groups)
+    assert elderly.risk_set == f"At risk for {len(elderly.at_risk_groups)} of {len(groups)} groups"
+    healthy = predictor.predict(_demo(predictor, 0))
+    assert healthy.at_risk_groups == groups and healthy.prior_groups == ()
+    # The outcome table flags exactly the groups outside the risk set.
+    had = healthy.outcomes.dropna(subset=["group"])
+    assert not had["patient_had_it"].any()
+
+
+# --- Age band ----------------------------------------------------------------------------
+
+
+def test_cosine_ranking_post_filter_reads_further_down_one_ranking() -> None:
+    rng = np.random.default_rng(0)
+    embedding, x = rng.normal(size=(30, 4)), rng.normal(size=4)
+    full, _ = cosine_ranking(embedding, x, np.ones(30, dtype=bool), 30)
+    allowed = rng.random(30) < 0.4
+    filtered, sims = cosine_ranking(embedding, x, allowed, 5)
+    assert filtered.tolist() == [node for node in full if allowed[node]][:5]
+    assert np.all(np.diff(sims) <= 0)
+    few, _ = cosine_ranking(embedding, x, np.eye(30, dtype=bool)[3], 5)
+    assert few.tolist() == [3]  # fewer allowed than asked: all of them
+
+
+def test_without_age_band_similar_patients_and_outcomes_match_the_prediction(
+    predictor: Predictor,
+) -> None:
+    prediction = predictor.predict(_demo(predictor, 1))
+    pd.testing.assert_frame_equal(predictor.similar_patients(prediction), prediction.similar)
+    pd.testing.assert_frame_equal(predictor.neighbour_outcomes(prediction), prediction.outcomes)
+
+
+@pytest.mark.parametrize("number", [0, 2])  # a young adult and a 78-year-old
+def test_age_band_keeps_n_similar_within_the_band(predictor: Predictor, number: int) -> None:
+    band = predictor.cfg.inference.age_band_years
+    n = predictor.cfg.inference.n_similar
+    prediction = predictor.predict(_demo(predictor, number))
+    similar = predictor.similar_patients(prediction, age_band=band)
+    assert len(similar) == n and similar["rank"].tolist() == list(range(1, n + 1))
+    assert (np.abs(similar["age"] - prediction.age) <= band).all()
+    # The same spectral ranking, read further down: every in-band patient ranked above
+    # the last one listed is listed, in ranking order.
+    index = predictor.node_index
+    full, _ = cosine_ranking(predictor.spectral, prediction.spectral,
+                             np.ones(len(predictor.patient_ids), dtype=bool),
+                             len(predictor.patient_ids))
+    ages = predictor.demographics["age"].to_numpy()
+    last = int(np.flatnonzero(full == index[similar["patient_id"].iloc[-1]])[0])
+    expected = [predictor.patient_ids[node] for node in full[:last + 1]
+                if abs(ages[node] - prediction.age) <= band]
+    assert similar["patient_id"].tolist() == expected
+    # Outcomes follow the filtered neighbours: observed labels only, as without a band.
+    labels = load_labels(predictor.cfg).set_index("patient_id")
+    outcomes = predictor.neighbour_outcomes(prediction, age_band=band).set_index("target")
+    values = labels.loc[similar["patient_id"], outcomes.index]
+    np.testing.assert_array_equal(outcomes[f"observed_{n}"], values.notna().sum().to_numpy())
+    np.testing.assert_array_equal(outcomes[f"positives_{n}"], (values == 1.0).sum().to_numpy())
+
+
+def test_age_band_changes_neither_the_graphs_nor_the_embeddings(predictor: Predictor) -> None:
+    prediction = predictor.predict(_demo(predictor, 2))
+    before = ([A.data.copy() for A in predictor.adjacency], predictor.spectral.copy(),
+              predictor.reference_states.copy(), prediction.spectral.copy(),
+              prediction.window_states.copy())
+    unfiltered = predictor.similar_patients(prediction)
+    filtered = predictor.similar_patients(prediction, age_band=predictor.cfg.inference.age_band_years)
+    assert not filtered.equals(unfiltered)  # the 78-year-old's nearest are mostly younger
+    after = ([A.data for A in predictor.adjacency], predictor.spectral, predictor.reference_states,
+             prediction.spectral, prediction.window_states)
+    for old, new in zip(before[0], after[0]):
+        np.testing.assert_array_equal(old, new)
+    for old, new in zip(before[1:], after[1:]):
+        np.testing.assert_array_equal(old, new)
+    pd.testing.assert_frame_equal(predictor.similar_patients(prediction), unfiltered)
+
+
+def test_age_band_respects_exclusions_and_needs_a_birth_date(predictor: Predictor) -> None:
+    band = predictor.cfg.inference.age_band_years
+    patient_id = predictor.patient_ids[0]
+    prediction = predictor.predict(predictor.reference_patient(patient_id), exclude=[patient_id])
+    assert patient_id not in set(predictor.similar_patients(prediction, age_band=band)["patient_id"])
+    without_birth_date = predictor.predict(NewPatient(_demo(predictor, 1).history))
+    assert without_birth_date.age is None
+    with pytest.raises(ValueError, match="birth date"):
+        predictor.similar_patients(without_birth_date, age_band=band)
+    with pytest.raises(ValueError, match="positive"):
+        predictor.similar_patients(prediction, age_band=0)
+    nothing = predictor.predict(NewPatient([(2020, "not-a-code")], "1980-01-01", "F"))
+    assert predictor.similar_patients(nothing, age_band=band).empty
+
+
+def test_similar_to_reference_excludes_the_patient(predictor: Predictor) -> None:
+    n = predictor.cfg.inference.n_similar
+    band = predictor.cfg.inference.age_band_years
+    for patient_id in predictor.patient_ids[:5]:
+        similar = predictor.similar_to_reference(patient_id)
+        assert len(similar) == n and patient_id not in set(similar["patient_id"])
+        assert np.all(np.diff(similar["similarity"]) <= 0)
+        age = float(predictor.demographics.loc[patient_id, "age"])
+        banded = predictor.similar_to_reference(patient_id, age_band=band)
+        assert (np.abs(banded["age"] - age) <= band).all()
+    with pytest.raises(KeyError):
+        predictor.similar_to_reference("not-a-patient")
+
+
+# --- Map placement -----------------------------------------------------------------------
+
+
+def test_map_positions_average_the_nearest_mapped_states() -> None:
+    states = np.array([[0.0, 0.0], [10.0, 0.0], [10.1, 0.0], [0.0, 10.0], [5.0, 5.0]])
+    positions = np.array([[0.0, 0.0], [1.0, 0.0], [3.0, 0.0], [0.0, 1.0], [np.nan, np.nan]])
+    np.testing.assert_allclose(map_positions(states[:4], states, positions, 1), positions[:4])
+    # The unmapped state (NaN position) is never used.
+    np.testing.assert_allclose(map_positions(np.array([[10.05, 0.0]]), states, positions, 2),
+                               [[2.0, 0.0]])
+    np.testing.assert_allclose(map_positions(np.array([[5.0, 5.0]]), states, positions, 99),
+                               [positions[:4].mean(axis=0)])

@@ -98,6 +98,10 @@ A condition is active in a year if it started before the year ended, had not sto
 
 Years below 500: none.
 
+The figure starts in 2007. Clinical events dated per year: mean 601 in 2007-2016, 2,671 in 2017-2025.
+
+![Patients and clinical events per year](figures/active_patients_per_year.png)
+
 ## Dropped codes (73)
 
 | Code | Description | Patients | Events |

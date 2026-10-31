@@ -50,7 +50,7 @@ def test_graph_ae_and_embedding_eval_sections() -> None:
     config = load_config()
     graph_ae, embedding_eval = config.graph_ae, config.embedding_eval
     assert graph_ae.embed_dim == embedding_eval.dim == 32
-    assert graph_ae.next_window_weight == 1.0
+    assert graph_ae.next_window_weight == 2.0  # the validation search's choice
     assert graph_ae.tuning_next_window_weights == (0.5, 1.0, 2.0)
     assert graph_ae.tuning_seeds == (42, 43, 44)
     assert embedding_eval.min_train_onsets == 20 and embedding_eval.n_neighbours == 5
@@ -251,3 +251,32 @@ def test_project_cutoff_splits_feature_and_label_windows() -> None:
     later = tuple(y for y in range(traj.start_year, traj.end_year + 1) if y not in features)
     assert later == (2023, 2024, 2025)
     assert labels.cutoff_date.year + labels.horizon_years - 1 == later[-1]
+
+
+def test_final_figures_are_png_figures_in_the_figures_dir() -> None:
+    config = load_config()
+    figures = config.final_figures.figures
+    assert len(figures) >= 10
+    for figure in figures:
+        path = getattr(config.paths, figure.source)
+        assert path.suffix == ".png" and path.parent == config.paths.figures_dir, figure.source
+        assert figure.caption.strip()
+    assert config.paths.final_figures_dir.parent == config.paths.figures_dir
+    assert config.summary.figure_save_dpi == 300
+
+
+@pytest.mark.parametrize("figures", [
+    [],
+    [{"source": "not_a_path", "name": "a", "caption": "c"}],
+    [{"source": "eigenvalues_fig", "name": "a", "caption": "c"},
+     {"source": "graph_drift_fig", "name": "a", "caption": "c"}],
+])
+def test_final_figures_are_validated(tmp_path: Path, figures: list[dict[str, str]]) -> None:
+    with pytest.raises(ValueError, match="final_figures"):
+        load_config(_write_variant(tmp_path, "final_figures", "figures", figures))
+
+
+@pytest.mark.parametrize("key", ["figure_save_dpi", "active_patients_history_years"])
+def test_summary_counts_are_validated(tmp_path: Path, key: str) -> None:
+    with pytest.raises(ValueError, match="summary"):
+        load_config(_write_variant(tmp_path, "summary", key, 0))

@@ -16,3 +16,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# pytest --cov=ehrgraph --cov-report=term: coverage of the ehrgraph package.
+[tool.coverage.run]
+source = ["ehrgraph"]

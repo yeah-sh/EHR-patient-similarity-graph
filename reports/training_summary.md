@@ -14,7 +14,7 @@ Built by `scripts/06_train.py`. All 2,581 model-cohort patients.
 
 ## Result
 
-Best epoch **74** of 94 run (stopped by early stopping after 20 epochs without improvement); training time 14.4 s.
+Best epoch **74** of 94 run (stopped by early stopping after 20 epochs without improvement); training time 13.3 s.
 
 | Validation | Positives / observed | AUROC | AUPRC | AUPRC of a random score |
 | --- | ---: | ---: | ---: | ---: |

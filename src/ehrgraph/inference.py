@@ -28,6 +28,15 @@ and every model keeps its saved ``state_dict``. A prediction runs these steps:
    phenotype (the nearest k-means centroid of Phase 4), the most similar reference patients
    (cosine), and the onsets those neighbours had in the label horizon (observed labels only).
 
+**Risk set.** ``any_onset`` is a NEW onset in any of the onset groups. A group the patient
+already has cannot have a new onset, so each prediction reports the groups it is still
+open in ("at risk for N of 9 groups", ``Prediction.at_risk_groups``). The neighbour outcomes
+count only neighbours whose label is observed, i.e. who were still at risk of that group.
+
+**Age band** (``Predictor.similar_patients``, ``Predictor.neighbour_outcomes``): optionally
+the similar patients are post-filtered to reference patients of similar age, reading further
+down the same spectral ranking. The graphs, the embeddings and the placement never change.
+
 **The inductive approximation.** The reference graphs are k-NN graphs symmetrized with
 ``max(W, W^T)``: a reference patient is also linked to every patient that has it among its
 own k nearest. Rebuilding the graph with the new patient would add such reverse edges and
@@ -103,6 +112,15 @@ LIFT_COLUMNS: list[str] = [
     "population_share", "lift",
 ]
 DROPPED_COLUMNS: list[str] = ["code", "onset", "reason"]
+# The risk set in one line, and why a healthier patient's neighbours can show a higher
+# any_onset rate than a multimorbid patient's.
+RISK_SET_RULE = "A new onset can only occur in a group the patient does not already have."
+RISK_SET_EXPLANATION = (
+    "A new onset can only occur in a group the patient does not already have, so a "
+    "multimorbid patient has fewer groups left at risk, and so do their similar patients. "
+    "A healthy patient's neighbours can therefore show a higher any_onset rate than a "
+    "multimorbid patient's: more groups in which a new onset can occur, not more disease."
+)
 _SEMANTIC_TAG = re.compile(r"\s*\([^()]*\)$")  # " (disorder)", dropped from condition names
 
 
@@ -187,6 +205,11 @@ class Prediction:
         chronic_codes: Chronic conditions active in a feature window (feature vocabulary),
             as for the reference patients (``features.chronic_presence``).
         prior_groups: Onset groups the patient already had before the cutoff.
+        at_risk_groups: The other onset groups, in config order: the only ones in which the
+            patient can have a new onset, i.e. the risk set of ``any_onset``.
+        age: Age in years at the cutoff, as for the reference patients (None without a
+            birth date).
+        excluded: Reference nodes that may not be neighbours (``predict(exclude=...)``).
         years: The feature windows.
         features: [T, F] the patient's feature rows.
         insertions: The graph insertion of each window.
@@ -215,6 +238,9 @@ class Prediction:
     conditions: pd.DataFrame
     chronic_codes: tuple[str, ...]
     prior_groups: tuple[str, ...]
+    at_risk_groups: tuple[str, ...]
+    age: float | None
+    excluded: tuple[int, ...]
     years: tuple[int, ...]
     features: np.ndarray
     insertions: tuple[Insertion, ...]
@@ -229,6 +255,12 @@ class Prediction:
     any_onset_logit: float | None
     any_onset_probability: float | None
     notes: tuple[str, ...]
+
+    @property
+    def risk_set(self) -> str:
+        """The risk set in words, e.g. "At risk for 5 of 9 groups" (``RISK_SET_EXPLANATION``)."""
+        groups = len(self.at_risk_groups) + len(self.prior_groups)
+        return f"At risk for {len(self.at_risk_groups)} of {groups} groups"
 
 
 # --- Linear algebra of the insertion ---------------------------------------------------
@@ -338,6 +370,60 @@ def nystrom_extension(
     d_x = float(np.sum(weights))
     coefficients = weights / np.sqrt(d_x * degrees[neighbours])
     return (coefficients @ vectors[neighbours]) / (1.0 - eigenvalues)
+
+
+def cosine_ranking(
+    embedding: np.ndarray, x: np.ndarray, allowed: np.ndarray, n: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rank the allowed rows of ``embedding`` by cosine similarity to ``x``; keep the first ``n``.
+
+    A zero row (or zero ``x``) has similarity 0. Ties keep the lower row first. Filtering
+    with ``allowed`` and then ranking is the same as ranking every row and skipping the
+    disallowed ones, so a post-filter reads further down one fixed ranking.
+
+    Args:
+        embedding: [N, d] reference rows.
+        x: [d] the query.
+        allowed: [N] bool; False rows are never returned.
+        n: Rows to return (fewer if fewer are allowed).
+
+    Returns:
+        The rows, most similar first, and their cosine similarities.
+    """
+    norms = np.linalg.norm(embedding, axis=1) * np.linalg.norm(x)
+    similarity = np.divide(embedding @ x, norms, out=np.zeros(len(norms)), where=norms > 0)
+    candidates = np.flatnonzero(allowed)
+    order = candidates[np.argsort(-similarity[candidates], kind="stable")][:n]
+    return order, similarity[order]
+
+
+def map_positions(
+    states: np.ndarray, reference_states: np.ndarray, reference_positions: np.ndarray, k: int
+) -> np.ndarray:
+    """Place states on a fixed 2-D map of reference states (e.g. a UMAP), without refitting it.
+
+    Each state goes to the mean map position of its ``k`` nearest reference states
+    (Euclidean, in the state space). Reference rows without a position (NaN, e.g. empty
+    windows left out of the map) are skipped.
+
+    Args:
+        states: [m, d] states to place.
+        reference_states: [M, d] the mapped states.
+        reference_positions: [M, 2] their map positions.
+        k: Nearest reference states averaged (at most the number with a position).
+
+    Returns:
+        [m, 2] map positions.
+    """
+    mapped = ~np.isnan(reference_positions).any(axis=1)
+    reference, positions = reference_states[mapped], reference_positions[mapped]
+    k = min(k, len(reference))
+    placed = np.empty((len(states), positions.shape[1]))
+    for i, state in enumerate(np.asarray(states, dtype=np.float64)):
+        distance = np.sum((reference - state) ** 2, axis=1)
+        nearest = np.argpartition(distance, k - 1)[:k]
+        placed[i] = positions[nearest].mean(axis=0)
+    return placed
 
 
 def outcome_counts(labels: np.ndarray, nodes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -797,6 +883,8 @@ class Predictor:
         chronic_codes = self._chronic_codes(parsed.events)
         prior = tuple(group for group, codes in self.cfg.labels.onset_groups.items()
                       if parsed.events["code"].isin(codes).any())
+        at_risk = tuple(group for group in self.cfg.labels.onset_groups if group not in prior)
+        age = self._age(patient.birth_date)
         n_ranked = max(inf.n_similar, inf.explain_neighbours, *inf.outcome_neighbours)
         logit = probability = None
         if placed:
@@ -805,7 +893,7 @@ class Predictor:
                                             self.spectral_basis, self.spectral_values)
             spectral = coordinates[1:]
             phenotype = self._phenotype(coordinates)
-            neighbours, similarities = self._rank(spectral, allowed, n_ranked)
+            neighbours, similarities = cosine_ranking(self.spectral, spectral, allowed, n_ranked)
             demographics = self._demographics(patient)
             if demographics is None:
                 notes.append("No birth date or sex: the any_onset probability needs both.")
@@ -825,6 +913,9 @@ class Predictor:
             conditions=conditions,
             chronic_codes=chronic_codes,
             prior_groups=prior,
+            at_risk_groups=at_risk,
+            age=age,
+            excluded=tuple(int(node) for node in np.flatnonzero(~allowed)),
             years=self.years,
             features=features,
             insertions=tuple(insertions),
@@ -867,7 +958,103 @@ class Predictor:
         return (lift.sort_values(["lift", "neighbours_with", "code"], ascending=[False, False, True])
                 .head(inf.explain_top).reset_index(drop=True)[LIFT_COLUMNS])
 
+    def similar_patients(self, prediction: Prediction, age_band: float | None = None) -> pd.DataFrame:
+        """The ``inference.n_similar`` most similar reference patients, optionally of similar age.
+
+        Without ``age_band`` this is ``prediction.similar``. With it, the reference patients
+        are post-filtered to those within +/- ``age_band`` years of the patient's age at the
+        cutoff (``Prediction.age``; reference ages as in ``features.patient_demographics``),
+        reading further down the same spectral ranking, so ``n_similar`` are still returned
+        while that many are in the band. The graphs, the embeddings and the placement never
+        change; only which ranked reference patients are listed.
+
+        Args:
+            prediction: Output of ``predict``.
+            age_band: Years either side of the patient's age (``inference.age_band_years``
+                in the app), or None for no filter.
+
+        Returns:
+            ``SIMILAR_COLUMNS``; empty if the patient was not placed.
+
+        Raises:
+            ValueError: If ``age_band`` is not positive, or given for a patient without a
+                birth date.
+        """
+        nodes, similarities = self._neighbours(prediction, self.cfg.inference.n_similar, age_band)
+        return self._similar(nodes, similarities, prediction.chronic_codes)
+
+    def neighbour_outcomes(self, prediction: Prediction, age_band: float | None = None) -> pd.DataFrame:
+        """``Prediction.outcomes`` among the neighbours of ``similar_patients(prediction, age_band)``.
+
+        Args:
+            prediction: Output of ``predict``.
+            age_band: As in ``similar_patients``.
+
+        Returns:
+            The layout of ``Prediction.outcomes``; without ``age_band`` the same table.
+
+        Raises:
+            ValueError: As ``similar_patients``.
+        """
+        nodes, _ = self._neighbours(prediction, max(self.cfg.inference.outcome_neighbours), age_band)
+        return self._outcomes(nodes, prediction.prior_groups)
+
+    def similar_to_reference(self, patient_id: str, age_band: float | None = None) -> pd.DataFrame:
+        """The ``inference.n_similar`` reference patients most similar to a reference patient.
+
+        Cosine similarity in the 2022 spectral embedding, as for a new patient; the patient
+        themselves is excluded, and ``age_band`` filters as in ``similar_patients``.
+
+        Args:
+            patient_id: A reference patient.
+            age_band: Years either side of their age at the cutoff, or None.
+
+        Returns:
+            ``SIMILAR_COLUMNS``; shared conditions are those shared with this patient.
+
+        Raises:
+            KeyError: If the patient is not a reference patient.
+            ValueError: If ``age_band`` is not positive.
+        """
+        if patient_id not in self.node_index:
+            raise KeyError(f"{patient_id} is not a reference patient")
+        node = self.node_index[patient_id]
+        allowed = self._within_age(float(self.demographics["age"].iloc[node]), age_band)
+        allowed[node] = False
+        nodes, similarities = cosine_ranking(self.spectral, self.spectral[node], allowed,
+                                             self.cfg.inference.n_similar)
+        codes = [self.feature_codes[c] for c in self.chronic[node].indices]
+        return self._similar(nodes, similarities, codes)
+
     # --- Helpers ---------------------------------------------------------------------------
+
+    def _neighbours(self, prediction: Prediction, n: int,
+                    age_band: float | None) -> tuple[np.ndarray, np.ndarray]:
+        """The ``n`` reference nodes most similar to a placed patient, within the age band."""
+        if not prediction.placed:
+            return np.empty(0, dtype=np.int64), np.empty(0)
+        allowed = self._within_age(prediction.age, age_band)
+        allowed[np.asarray(prediction.excluded, dtype=np.int64)] = False
+        return cosine_ranking(self.spectral, prediction.spectral, allowed, n)
+
+    def _within_age(self, age: float | None, age_band: float | None) -> np.ndarray:
+        """[N] bool: reference patients within +/- ``age_band`` years of ``age`` (all if None)."""
+        if age_band is None:
+            return np.ones(len(self.patient_ids), dtype=bool)
+        if age_band <= 0:
+            raise ValueError(f"age_band must be positive, got {age_band}")
+        if age is None:
+            raise ValueError("an age band needs the patient's birth date")
+        return np.abs(self.demographics["age"].to_numpy(dtype=float) - age) <= age_band
+
+    def _age(self, birth_date: date | str | None) -> float | None:
+        """Age in years (``data.DAYS_PER_YEAR``) at the cutoff, or None without a birth date."""
+        if birth_date is None:
+            return None
+        days = (_utc(self.cfg.labels.cutoff_date) - _timestamp(birth_date)).days
+        if days < 0:
+            raise ValueError(f"born after the cutoff {self.cfg.labels.cutoff_date}")
+        return days / DAYS_PER_YEAR
 
     def _conditions(self, events: pd.DataFrame) -> pd.DataFrame:
         """code, condition, onset (first event) and chronic (any chronic episode) per code."""
@@ -891,11 +1078,7 @@ class Predictor:
             return None
         if patient.sex not in SEX_CODES:
             raise ValueError(f"sex must be one of {sorted(SEX_CODES)}, got {patient.sex!r}")
-        cutoff = _utc(self.cfg.labels.cutoff_date)
-        days = (cutoff - _timestamp(patient.birth_date)).days
-        if days < 0:
-            raise ValueError(f"born after the cutoff {self.cfg.labels.cutoff_date}")
-        values = {"age": (days / DAYS_PER_YEAR - self.age_mean) / self.age_sd,
+        values = {"age": (self._age(patient.birth_date) - self.age_mean) / self.age_sd,
                   "sex": SEX_CODES[patient.sex]}
         return np.array([values[name] for name in DEMOGRAPHICS], dtype=np.float32)
 
@@ -914,15 +1097,6 @@ class Predictor:
         row = normalize(coordinates[None, :k])[0]
         cluster = int(np.argmin(np.linalg.norm(self.centroids - row, axis=1))) + 1
         return self.phenotypes[cluster]
-
-    def _rank(self, spectral: np.ndarray, allowed: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
-        """The ``n`` allowed reference nodes most cosine-similar in the spectral embedding."""
-        norms = np.linalg.norm(self.spectral, axis=1) * np.linalg.norm(spectral)
-        similarity = np.divide(self.spectral @ spectral, norms, out=np.zeros(len(norms)),
-                               where=norms > 0)
-        candidates = np.flatnonzero(allowed)
-        order = candidates[np.argsort(-similarity[candidates], kind="stable")][:n]
-        return order, similarity[order]
 
     def _similar(self, nodes: np.ndarray, similarities: np.ndarray,
                  chronic_codes: Sequence[str]) -> pd.DataFrame:

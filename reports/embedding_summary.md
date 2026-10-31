@@ -23,7 +23,7 @@ Plain-language findings of `scripts/07b_embeddings.py`; every number, with its s
 
 *In short, the GraphAE is better on neighbour concordance, `any_onset` probe; not shown different on next-year micro AUROC, next-year macro AUROC.*
 
-  - Next-year micro AUROC: **Not shown** (the interval includes 0; the point estimate favours GraphAE, no graph (vi)): micro AUROC 0.755 vs 0.766, difference -0.010 (95% CI -0.041 to +0.019).
+  - Next-year micro AUROC: **Not shown** (the interval includes 0; the point estimate favours GraphAE, no graph (vi)): micro AUROC 0.755 vs 0.766, difference -0.011 (95% CI -0.041 to +0.019).
   - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours GraphAE, no graph (vi)): macro AUROC 0.571 vs 0.624, difference -0.054 (95% CI -0.129 to +0.036).
   - Neighbour concordance: **Yes**, the GraphAE is better: mean Jaccard 0.358 vs 0.318, difference +0.040 (95% CI +0.020 to +0.060).
   - `any_onset` probe: **Yes**, the GraphAE is better: pooled AUROC 0.581 vs 0.531, difference +0.050 (95% CI +0.009 to +0.085).
@@ -33,10 +33,10 @@ Plain-language findings of `scripts/07b_embeddings.py`; every number, with its s
 
 *In short, the GraphAE is better on neighbour concordance, `any_onset` probe; not shown different on next-year micro AUROC, next-year macro AUROC.*
 
-  - Next-year micro AUROC: **Not shown** (the interval includes 0; the point estimate favours GraphAE, rewired graphs (vii)): micro AUROC 0.755 vs 0.769, difference -0.013 (95% CI -0.044 to +0.017).
-  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): macro AUROC 0.571 vs 0.557, difference +0.014 (95% CI -0.090 to +0.121).
+  - Next-year micro AUROC: **Not shown** (the interval includes 0; the point estimate favours GraphAE, rewired graphs (vii)): micro AUROC 0.755 vs 0.769, difference -0.014 (95% CI -0.044 to +0.017).
+  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): macro AUROC 0.571 vs 0.557, difference +0.014 (95% CI -0.091 to +0.121).
   - Neighbour concordance: **Yes**, the GraphAE is better: mean Jaccard 0.358 vs 0.123, difference +0.235 (95% CI +0.213 to +0.256).
-  - `any_onset` probe: **Yes**, the GraphAE is better: pooled AUROC 0.581 vs 0.468, difference +0.113 (95% CI +0.072 to +0.154).
+  - `any_onset` probe: **Yes**, the GraphAE is better: pooled AUROC 0.581 vs 0.468, difference +0.113 (95% CI +0.073 to +0.154).
   - Caution on the probe: in 3 of 5 folds the calibration of GraphAE, rewired graphs (vii) has a slope <= 0 and reverses that fold's ranking, which pulls its pooled AUROC down. Uncalibrated, the mean within-fold AUROC is 0.586 for the GraphAE and 0.546 for GraphAE, rewired graphs (vii).
 
 **Does the temporal (next-window) objective help?** (TemporalGraphAE (i) vs GraphAE, link only (viii))
@@ -44,7 +44,7 @@ Plain-language findings of `scripts/07b_embeddings.py`; every number, with its s
 *In short, the GraphAE is worse on neighbour concordance; not shown different on next-year micro AUROC, next-year macro AUROC, `any_onset` probe.*
 
   - Next-year micro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): micro AUROC 0.755 vs 0.742, difference +0.014 (95% CI -0.008 to +0.034).
-  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours GraphAE, link only (viii)): macro AUROC 0.571 vs 0.574, difference -0.004 (95% CI -0.046 to +0.084).
+  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours GraphAE, link only (viii)): macro AUROC 0.571 vs 0.574, difference -0.004 (95% CI -0.047 to +0.084).
   - Neighbour concordance: **No, the reverse**: GraphAE, link only (viii) is better: mean Jaccard 0.358 vs 0.403, difference -0.046 (95% CI -0.062 to -0.030).
   - `any_onset` probe: **Not shown** (the interval includes 0; the point estimate favours GraphAE, link only (viii)): pooled AUROC 0.581 vs 0.586, difference -0.005 (95% CI -0.036 to +0.025).
 
@@ -53,7 +53,7 @@ Plain-language findings of `scripts/07b_embeddings.py`; every number, with its s
 *In short, the GraphAE is worse on neighbour concordance; not shown different on next-year micro AUROC, next-year macro AUROC, `any_onset` probe.*
 
   - Next-year micro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): micro AUROC 0.755 vs 0.752, difference +0.003 (95% CI -0.023 to +0.028).
-  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours PCA, final window (ii)): macro AUROC 0.571 vs 0.624, difference -0.054 (95% CI -0.109 to +0.047).
+  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours PCA, final window (ii)): macro AUROC 0.571 vs 0.624, difference -0.054 (95% CI -0.108 to +0.047).
   - Neighbour concordance: **No, the reverse**: PCA, final window (ii) is better: mean Jaccard 0.358 vs 0.394, difference -0.036 (95% CI -0.053 to -0.019).
   - `any_onset` probe: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): pooled AUROC 0.581 vs 0.575, difference +0.006 (95% CI -0.029 to +0.038).
 
@@ -61,17 +61,17 @@ Plain-language findings of `scripts/07b_embeddings.py`; every number, with its s
 
 *In short, the GraphAE is worse on neighbour concordance; not shown different on next-year micro AUROC, next-year macro AUROC, `any_onset` probe.*
 
-  - Next-year micro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): micro AUROC 0.755 vs 0.727, difference +0.028 (95% CI -0.001 to +0.058).
-  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): macro AUROC 0.571 vs 0.571, difference +0.000 (95% CI -0.054 to +0.087).
+  - Next-year micro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): micro AUROC 0.755 vs 0.727, difference +0.028 (95% CI -0.001 to +0.057).
+  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): macro AUROC 0.571 vs 0.571, difference +0.000 (95% CI -0.054 to +0.088).
   - Neighbour concordance: **No, the reverse**: PCA, every window (iii) is better: mean Jaccard 0.358 vs 0.414, difference -0.057 (95% CI -0.077 to -0.037).
-  - `any_onset` probe: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): pooled AUROC 0.581 vs 0.558, difference +0.023 (95% CI -0.011 to +0.052).
+  - `any_onset` probe: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): pooled AUROC 0.581 vs 0.558, difference +0.023 (95% CI -0.011 to +0.053).
 
 **Does the GraphAE beat the spectral embedding?** (TemporalGraphAE (i) vs Spectral embedding (iv))
 
 *In short, the GraphAE is better on next-year micro AUROC; worse on neighbour concordance; not shown different on next-year macro AUROC, `any_onset` probe.*
 
-  - Next-year micro AUROC: **Yes**, the GraphAE is better: micro AUROC 0.755 vs 0.713, difference +0.043 (95% CI +0.017 to +0.068).
-  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): macro AUROC 0.571 vs 0.548, difference +0.023 (95% CI -0.042 to +0.116).
+  - Next-year micro AUROC: **Yes**, the GraphAE is better: micro AUROC 0.755 vs 0.713, difference +0.042 (95% CI +0.016 to +0.067).
+  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): macro AUROC 0.571 vs 0.548, difference +0.023 (95% CI -0.042 to +0.117).
   - Neighbour concordance: **No, the reverse**: Spectral embedding (iv) is better: mean Jaccard 0.358 vs 0.431, difference -0.074 (95% CI -0.095 to -0.055).
   - `any_onset` probe: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): pooled AUROC 0.581 vs 0.562, difference +0.019 (95% CI -0.010 to +0.046).
 
@@ -80,13 +80,13 @@ Plain-language findings of `scripts/07b_embeddings.py`; every number, with its s
 *In short, the GraphAE is better on neighbour concordance; worse on `any_onset` probe; not shown different on next-year micro AUROC, next-year macro AUROC.*
 
   - Next-year micro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): micro AUROC 0.755 vs 0.753, difference +0.002 (95% CI -0.032 to +0.037).
-  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): macro AUROC 0.571 vs 0.503, difference +0.068 (95% CI -0.036 to +0.165).
+  - Next-year macro AUROC: **Not shown** (the interval includes 0; the point estimate favours the GraphAE): macro AUROC 0.571 vs 0.503, difference +0.068 (95% CI -0.037 to +0.165).
   - Neighbour concordance: **Yes**, the GraphAE is better: mean Jaccard 0.358 vs 0.143, difference +0.215 (95% CI +0.189 to +0.240).
   - `any_onset` probe: **No, the reverse**: Supervised TemporalGCN h (v) is better: pooled AUROC 0.581 vs 0.691, difference -0.110 (95% CI -0.142 to -0.080).
 
 ## Overall
 
-- **Next-year prediction is weak for every embedding.** Within a condition (macro AUROC) the embeddings rank patients at 0.503-0.624; 2 of 8 have an interval above 0.5 (PCA, final window (ii) and GraphAE, no graph (vi)), and the GraphAE's is 0.499 to 0.643. Pooled over conditions (micro AUROC, 0.713-0.769), 2 of 8 score above the 0.760 that the conditions' base rates give with no patient information; the GraphAE minus base rates is -0.005 (95% CI -0.034 to +0.026). Across the tuning seeds the GraphAE's micro AUROC ranges 0.741-0.755, a spread the intervals do not include.
+- **Next-year prediction is weak for every embedding.** Within a condition (macro AUROC) the embeddings rank patients at 0.503-0.624; 2 of 8 have an interval above 0.5 (PCA, final window (ii) and GraphAE, no graph (vi)), and the GraphAE's is 0.499 to 0.643. Pooled over conditions (micro AUROC, 0.713-0.769), 2 of 8 score above the 0.760 that the conditions' base rates give with no patient information; the GraphAE minus base rates is -0.005 (95% CI -0.035 to +0.026). Across the tuning seeds the GraphAE's micro AUROC ranges 0.741-0.755, a spread the intervals do not include.
 - **`any_onset` probe:** the GraphAE + age, sex reaches 0.581; minus Phase 7 model 2: -0.004 (95% CI -0.035 to +0.027): not distinguishable from model 2.
 
 ## Caveats

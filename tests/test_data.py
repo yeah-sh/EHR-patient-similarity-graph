@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from PIL import Image
 
 from ehrgraph.config import CodeFilterConfig, Config, load_config
 from ehrgraph.data import (
@@ -19,11 +20,13 @@ from ehrgraph.data import (
     alive_patients_per_year,
     build_code_dictionary,
     build_events,
+    chart_style,
     classify_codes,
     filter_clinical_events,
     load_raw,
     merge_codes,
     patient_ages,
+    plot_events_per_patient,
     save_code_dictionary,
     save_events,
     top_conditions,
@@ -100,6 +103,7 @@ def cfg(tmp_path: Path) -> Config:
         clinical_summary_md=tmp_path / "reports" / "clinical_summary.md",
         events_per_patient_fig=tmp_path / "reports" / "figures" / "events.png",
         top_conditions_fig=tmp_path / "reports" / "figures" / "top.png",
+        active_patients_fig=tmp_path / "reports" / "figures" / "active.png",
     )
     return replace(base, paths=paths)
 
@@ -416,6 +420,34 @@ def test_write_clinical_summary(cfg: Config) -> None:
     # The fixture has only the old prediabetes code, so the canonical one has no description.
     assert "| 15777000 | Prediabetes | 714628002 | not in data | 1 | 1 |" in text
     assert "| Codes | 4 | 2 | 6 | 66.7% |" in text  # the renamed code still counts
+    # The figure starts summary.active_patients_history_years before the windows.
+    first = cfg.trajectories.start_year - cfg.summary.active_patients_history_years
+    assert f"The figure starts in {first}." in text
+    assert "(figures/active.png)" in text
+    assert cfg.paths.active_patients_fig.stat().st_size > 0
+
+
+def test_figures_are_saved_at_the_save_dpi(cfg: Config) -> None:
+    """Layout at figure_dpi, PNG at figure_save_dpi: same figure, more pixels."""
+    raw = load_raw(cfg)
+    events = build_events(raw)
+    per_patient = events.groupby("patient_id").size()
+    sizes = {}
+    for save_dpi in (cfg.summary.figure_dpi, 2 * cfg.summary.figure_dpi):
+        run = replace(cfg, summary=replace(cfg.summary, figure_save_dpi=save_dpi))
+        path = cfg.paths.figures_dir / f"events_{save_dpi}.png"
+        plot_events_per_patient(per_patient, path, run)
+        with Image.open(path) as image:
+            sizes[save_dpi] = image.size
+            assert round(image.info["dpi"][0]) == save_dpi
+    low, high = sizes.values()
+    assert high == (2 * low[0], 2 * low[1])
+
+
+def test_chart_style_saves_at_the_layout_dpi_by_default() -> None:
+    assert chart_style(150)["savefig.dpi"] == 150
+    assert chart_style(150, 300)["savefig.dpi"] == 300
+    assert chart_style(150, 300)["figure.dpi"] == 150
 
 
 # --- Active conditions per year -------------------------------------------------

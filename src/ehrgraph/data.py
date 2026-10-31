@@ -27,8 +27,9 @@ import matplotlib
 import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
+from matplotlib.ticker import StrMethodFormatter
 
-from ehrgraph.config import CodeFilterConfig, Config
+from ehrgraph.config import CodeFilterConfig, Config, feature_window_years
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,15 @@ _BAR_FILL = 0.5  # share of each row a bar fills; the rest is air
 _MAX_BAR_PX = 24
 _SURFACE_GAP_PX = 2  # surface-coloured gap between adjacent histogram bars
 _LINE_PX = 2
+_MARKER_PX = 8
 _VALUE_LABEL_MARGIN = 0.1  # x headroom so value labels at the bar tips are not clipped
+# Active-patients figure: patient panel above the events panel.
+_ACTIVE_HEIGHT_IN = 6.5
+_ACTIVE_HEIGHT_RATIOS = (3, 2)
+_ACTIVE_HEADROOM = 1.3  # y range over the largest count, leaving room for the span labels
+_SPAN_LABEL_Y = 0.97  # top of the span labels, as a share of the patient panel's height
+_FEATURE_SPAN_ALPHA = 0.6  # tints of the gridline colour behind the feature and label windows
+_LABEL_SPAN_ALPHA = 0.25
 
 
 @dataclass(frozen=True)
@@ -586,7 +595,7 @@ def plot_events_per_patient(per_patient: pd.Series, path: Path, cfg: Config) -> 
     edges = np.arange(0, max_count + width + 1, width)
     median = float(per_patient.median())
 
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=(_FIG_WIDTH_IN, _HIST_HEIGHT_IN), layout="constrained")
         ax = fig.subplots()
         ax.hist(
@@ -630,7 +639,7 @@ def plot_top_conditions(top: pd.DataFrame, path: Path, cfg: Config) -> None:
     row_in = _MAX_BAR_PX / (_BAR_FILL * dpi)  # keeps each bar at most _MAX_BAR_PX thick
     y = np.arange(len(top))
 
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(
             figsize=(_FIG_WIDTH_IN, len(top) * row_in + _BAR_CHROME_IN), layout="constrained"
         )
@@ -653,12 +662,78 @@ def plot_top_conditions(top: pd.DataFrame, path: Path, cfg: Config) -> None:
         save_figure(fig, path)
 
 
-def chart_style(dpi: int) -> dict[str, object]:
-    """Matplotlib rc settings for the reference palette at ``dpi``."""
+def plot_active_patients(
+    alive: pd.Series, active: pd.Series, dated: pd.Series, path: Path, cfg: Config
+) -> None:
+    """Save patients alive and with an active condition, and events dated, per year.
+
+    Two panels on one year axis, each with its own scale: the patient counts, and the
+    clinical events dated in each year. The feature windows (``feature_window_years``)
+    and the label windows after them, up to ``trajectories.end_year``, are shaded.
+
+    Args:
+        alive: ``alive_patients_per_year``, indexed by year.
+        active: ``active_patients_per_year`` of the clinical events, same years.
+        dated: Clinical events dated in each year, same years.
+        path: Output PNG.
+        cfg: Project configuration.
+    """
+    dpi = cfg.summary.figure_dpi
+    px = _POINTS_PER_INCH / dpi
+    years = alive.index.to_numpy()
+    feature_years = feature_window_years(cfg)
+    spans = [(feature_years[0], feature_years[-1], "feature windows", _FEATURE_SPAN_ALPHA),
+             (feature_years[-1] + 1, cfg.trajectories.end_year, "label windows",
+              _LABEL_SPAN_ALPHA)]
+
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
+        fig = Figure(figsize=(_FIG_WIDTH_IN, _ACTIVE_HEIGHT_IN), layout="constrained")
+        top, bottom = fig.subplots(2, 1, sharex=True, height_ratios=_ACTIVE_HEIGHT_RATIOS)
+        for ax in (top, bottom):
+            for first, last, _, alpha in spans:
+                ax.axvspan(first - 0.5, last + 0.5, color=_GRIDLINE, alpha=alpha, linewidth=0)
+            ax.grid(axis="y")
+            ax.set_axisbelow(True)
+            ax.spines["left"].set_visible(False)
+            ax.tick_params(axis="y", length=0)
+        for first, last, label, _ in spans:
+            top.text((first + last) / 2, _SPAN_LABEL_Y, f"{label}\n{first}-{last}",
+                     transform=top.get_xaxis_transform(), ha="center", va="top",
+                     color=_TEXT_SECONDARY)
+
+        for series, label, color in [(alive, "alive", _TEXT_MUTED),
+                                     (active, "with an active clinical condition",
+                                      _SERIES_COLOR)]:
+            top.plot(years, series.to_numpy(), color=color, linewidth=_LINE_PX * px,
+                     marker="o", markersize=_MARKER_PX * px, label=label)
+        top.legend(loc="lower left", frameon=False)
+        top.set_ylim(0, alive.max() * _ACTIVE_HEADROOM)
+        top.set_ylabel("Patients")
+        top.set_title(f"Patients alive and with an active clinical condition, "
+                      f"{years[0]}-{years[-1]}")
+        top.yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+
+        bottom.bar(years, dated.to_numpy(), width=_BAR_FILL, color=_SERIES_COLOR)
+        bottom.set_ylabel("Events")
+        bottom.set_title("Clinical events dated in each year")
+        bottom.set_xticks(years, [str(y) for y in years])
+        bottom.set_xlim(years[0] - 0.5, years[-1] + 0.5)
+        bottom.yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+        save_figure(fig, path)
+
+
+def chart_style(dpi: int, save_dpi: int | None = None) -> dict[str, object]:
+    """Matplotlib rc settings for the reference palette at ``dpi``.
+
+    Args:
+        dpi: Layout resolution: a pixel size in the figure code is a pixel at this dpi.
+        save_dpi: Resolution of the saved PNG (``summary.figure_save_dpi``); the figure
+            looks the same, at ``save_dpi / dpi`` times the pixels. Defaults to ``dpi``.
+    """
     hairline = _POINTS_PER_INCH / dpi  # 1 px in points
     return {
         "figure.dpi": dpi,
-        "savefig.dpi": dpi,
+        "savefig.dpi": dpi if save_dpi is None else save_dpi,
         "figure.facecolor": _SURFACE,
         "savefig.facecolor": _SURFACE,
         "axes.facecolor": _SURFACE,
@@ -834,8 +909,10 @@ def write_clinical_summary(
 
     Covers the code merges, the filter rule and whitelist; codes, events and
     patients kept versus dropped; the top clinical conditions; patients with an
-    active clinical condition in each trajectory year; and every dropped code,
-    for review. Everything after the merges section counts merged codes.
+    active clinical condition in each trajectory year, with their figure
+    (``plot_active_patients``, from ``summary.active_patients_history_years`` years
+    earlier); and every dropped code, for review. Everything after the merges section
+    counts merged codes.
 
     Args:
         events: Output of ``build_events`` (unfiltered, codes not yet merged).
@@ -889,10 +966,19 @@ def write_clinical_summary(
     codes_per_patient = clinical.groupby("patient_id")["code"].nunique()
     n_multi = int((codes_per_patient >= min_codes).sum())
     top = top_conditions(clinical, code_dictionary, opts.top_n_conditions)
-    active = active_patients_per_year(clinical, patients, traj.start_year, traj.end_year)
-    alive = alive_patients_per_year(patients, traj.start_year, traj.end_year)
+    # The figure starts active_patients_history_years earlier than the table.
+    first_year = traj.start_year - opts.active_patients_history_years
+    active_all = active_patients_per_year(clinical, patients, first_year, traj.end_year)
+    alive_all = alive_patients_per_year(patients, first_year, traj.end_year)
+    dated = (clinical["date"].dt.year.value_counts()
+             .reindex(range(first_year, traj.end_year + 1), fill_value=0).sort_index())
+    plot_active_patients(alive_all, active_all, dated, cfg.paths.active_patients_fig, cfg)
+    active = active_all.loc[traj.start_year:]
+    alive = alive_all.loc[traj.start_year:]
     threshold = opts.min_active_patients_per_year
     low_years = [int(y) for y in active.index[active < threshold]]
+    figure = Path(os.path.relpath(cfg.paths.active_patients_fig,
+                                  cfg.paths.clinical_summary_md.parent)).as_posix()
 
     def share(part: int, whole: int) -> str:
         return f"{part / whole:.1%}"
@@ -993,6 +1079,12 @@ def write_clinical_summary(
         ),
         "",
         f"Years below {threshold:,}: {', '.join(map(str, low_years)) if low_years else 'none'}.",
+        "",
+        f"The figure starts in {first_year}. Clinical events dated per year: mean "
+        f"{dated.loc[:traj.start_year - 1].mean():,.0f} in {first_year}-{traj.start_year - 1}, "
+        f"{dated.loc[traj.start_year:].mean():,.0f} in {traj.start_year}-{traj.end_year}.",
+        "",
+        f"![Patients and clinical events per year]({figure})",
         "",
         f"## Dropped codes ({len(dropped)})",
         "",

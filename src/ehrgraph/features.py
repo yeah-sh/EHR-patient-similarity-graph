@@ -878,6 +878,31 @@ def most_common_codes(comorbidity: Comorbidity, n: int, min_frequency: int = 0) 
     return order[frequency[order] >= max(min_frequency, 1)][:n]
 
 
+def lift_profiles(comorbidity: Comorbidity, codes: np.ndarray, limit: float) -> np.ndarray:
+    """Each code's clipped log2 lift with each of ``codes``: one row (profile) per code.
+
+    Pairs never active together (lift 0) sit at ``-limit``; the diagonal is 0. The rows
+    are what ``lift_linkage`` clusters (the comorbidity heatmap's order).
+
+    Args:
+        comorbidity: Output of ``build_comorbidity`` or ``build_chronic_comorbidity``.
+        codes: Code indices.
+        limit: Clip log2 lift to [-limit, limit] (``summary.heatmap_log2_lift_limit``).
+
+    Returns:
+        [len(codes), len(codes)].
+    """
+    with np.errstate(divide="ignore"):
+        values = np.clip(np.log2(comorbidity.lift[codes][:, codes].toarray()), -limit, limit)
+    np.fill_diagonal(values, 0.0)
+    return values
+
+
+def lift_linkage(profiles: np.ndarray) -> np.ndarray:
+    """Average-linkage clustering (Euclidean, optimal leaf order) of ``lift_profiles`` rows."""
+    return linkage(profiles, method="average", optimal_ordering=True)
+
+
 def plot_comorbidity_heatmap(
     comorbidity: Comorbidity,
     descriptions: Mapping[str, str],
@@ -903,10 +928,8 @@ def plot_comorbidity_heatmap(
     opts = cfg.summary
     limit = opts.heatmap_log2_lift_limit
     top = most_common_codes(comorbidity, opts.heatmap_codes, min_frequency)
-    with np.errstate(divide="ignore"):
-        values = np.clip(np.log2(comorbidity.lift[top][:, top].toarray()), -limit, limit)
-    np.fill_diagonal(values, 0.0)
-    order = leaves_list(linkage(values, method="average", optimal_ordering=True))
+    values = lift_profiles(comorbidity, top, limit)
+    order = leaves_list(lift_linkage(values))
     values = values[np.ix_(order, order)]
     labels = [_SEMANTIC_TAG.sub("", descriptions[comorbidity.codes[i]]) for i in top[order]]
     n = len(labels)
@@ -915,7 +938,7 @@ def plot_comorbidity_heatmap(
     # The blank diagonal is transparent, so it shows the surface.
     cmap = LinearSegmentedColormap.from_list("lift", _DIVERGING).with_extremes(bad=(0, 0, 0, 0))
     ticks = np.arange(-math.floor(limit), math.floor(limit) + 1)
-    with matplotlib.rc_context(chart_style(dpi)):
+    with matplotlib.rc_context(chart_style(dpi, cfg.summary.figure_save_dpi)):
         fig = Figure(figsize=_HEATMAP_SIZE_IN, layout="constrained")
         ax = fig.subplots()
         mesh = ax.pcolormesh(

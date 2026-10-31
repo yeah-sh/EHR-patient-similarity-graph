@@ -44,6 +44,7 @@ from ehrgraph.labels import (
     split_strata,
     stratified_split,
     target_columns,
+    write_labels_summary,
 )
 from ehrgraph.trajectories import build_trajectories, window_trajectories
 
@@ -148,6 +149,11 @@ def _labels(cfg: Config, **overrides) -> pd.DataFrame:
     ).set_index("patient_id")
 
 
+def _statuses(labels: pd.DataFrame, cfg: Config, patient: str) -> list[str]:
+    """``patient``'s statuses in ``label_columns`` order: any_onset, g1, g2, mortality."""
+    return labels.loc[patient, [STATUS_PREFIX + c for c in label_columns(cfg)]].astype(str).tolist()
+
+
 # --- Labels and censoring --------------------------------------------------------------
 
 
@@ -201,6 +207,127 @@ def test_selected_by_future_patients_stay_nodes_with_every_label_masked(cfg: Con
     assert stratified_split(strata, split_fractions(cfg), cfg.seed).notna().all()
 
 
+# --- Onsets held before the cutoff ------------------------------------------------------
+
+
+def test_a_group_held_before_the_cutoff_stays_masked_when_another_of_its_codes_follows(
+    cfg: Config,
+) -> None:
+    labels = _labels(cfg, events=_events(EVENT_ROWS + [
+        ("pNeg", "2021-06-01", "A2"),  # g1's onset is its first event of A1 or A2 ...
+        ("pNeg", "2024-02-01", "A1"),  # ... so a first A1 in the horizon is no new onset
+        ("pPrev", "2024-06-01", "A2"),  # nor is a recurrence of the same group
+    ]))
+    assert _statuses(labels, cfg, "pNeg") == [NEGATIVE, PREVALENT, NEGATIVE, NEGATIVE]
+    assert _statuses(labels, cfg, "pPrev") == [POSITIVE, PREVALENT, POSITIVE, NEGATIVE]
+
+
+@pytest.mark.parametrize(
+    ("when", "status"),
+    [
+        ("2022-12-31T23:59:59Z", PREVALENT),  # the last second before the cutoff
+        ("2023-01-01T00:00:00Z", POSITIVE),  # the cutoff itself opens the horizon
+    ],
+)
+def test_onset_on_either_side_of_the_cutoff(cfg: Config, when: str, status: str) -> None:
+    labels = _labels(cfg, events=_events(EVENT_ROWS + [("pNeg", when, "B")]))
+    assert labels.loc["pNeg", STATUS_PREFIX + "onset_g2"] == status
+
+
+def test_prevalence_precedes_both_censoring_rules(cfg: Config) -> None:
+    labels = _labels(cfg, events=_events(EVENT_ROWS + [
+        ("pLost", "2021-01-01", "B"),  # lost to follow-up (rule a), but already had g2
+        ("pDied", "2021-01-01", "B"),  # died in the horizon (rule b), but already had g2
+    ]))
+    assert _statuses(labels, cfg, "pLost") == [
+        LOST_AFTER_ONSET, LOST_AFTER_ONSET, PREVALENT, NEGATIVE
+    ]
+    assert _statuses(labels, cfg, "pDied") == [POSITIVE, POSITIVE, PREVALENT, POSITIVE]
+
+
+def test_every_group_held_before_the_cutoff_masks_any_onset(cfg: Config) -> None:
+    labels = _labels(cfg, events=_events(EVENT_ROWS + [
+        ("pNeg", "2021-01-01", "A1"), ("pNeg", "2021-01-01", "B"),
+    ]))
+    assert _statuses(labels, cfg, "pNeg") == [PREVALENT, PREVALENT, PREVALENT, NEGATIVE]
+    assert labels.loc["pNeg", target_columns(cfg)].isna().all()
+    assert labels.loc["pNeg", MORTALITY] == 0.0  # still observed: alive and followed up
+
+
+# --- Censoring rules (a) and (b) ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("death", "died_before", "statuses"),
+    [
+        ("2022-12-31T23:59:59Z", True, [DIED_BEFORE_CUTOFF] * 4),
+        # On the cutoff: a death in the horizon, so rule (b) masks every group without
+        # an onset and mortality is 1.
+        ("2023-01-01T00:00:00Z", False, [DIED_WITHOUT_ONSET] * 3 + [POSITIVE]),
+    ],
+)
+def test_death_on_either_side_of_the_cutoff(
+    cfg: Config, death: str, died_before: bool, statuses: list[str]
+) -> None:
+    encounters = [r for r in ENCOUNTER_ROWS if r[0] != "pNeg"] + [("pNeg", "2022-12-01")]
+    labels = _labels(cfg, patients=_patients(DEATHS | {"pNeg": death}),
+                     encounters=_encounters(encounters))
+    assert _statuses(labels, cfg, "pNeg") == statuses
+    assert bool(labels.loc["pNeg", "died_before_cutoff"]) is died_before
+    assert bool(labels.loc["pNeg", "died_in_horizon"]) is not died_before
+    assert not labels.loc["pNeg", "lost_to_follow_up"]  # rule (a) never judges the dead
+
+
+def test_a_death_after_the_horizon_is_unseen_so_rule_a_applies(cfg: Config) -> None:
+    # pLate dies 2026-05-01, after the horizon: alive through it as far as labels can see,
+    # so a last encounter before 2025-01-01 masks every onset label (rule a).
+    encounters = [r for r in ENCOUNTER_ROWS if r[0] != "pLate"] + [("pLate", "2024-03-01")]
+    labels = _labels(cfg, encounters=_encounters(encounters))
+    assert labels.loc["pLate", "lost_to_follow_up"]
+    assert not labels.loc["pLate", "died_in_horizon"]
+    assert _statuses(labels, cfg, "pLate") == [LOST_TO_FOLLOW_UP] * 3 + [NEGATIVE]
+
+
+# --- Selected by post-cutoff codes ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("extra", "selected"),
+    [
+        (("pFuture", "2022-03-01", "X"), True),  # the same code again: one distinct code
+        (("pFuture", "2023-01-01", "Y"), True),  # a second code on the cutoff is too late
+        (("pFuture", "2022-12-31T23:59:59Z", "Y"), False),  # just before it: two codes
+    ],
+)
+def test_selected_by_future_counts_distinct_codes_before_the_cutoff(
+    cfg: Config, extra: tuple[str, str, str], selected: bool
+) -> None:
+    labels = _labels(cfg, events=_events(EVENT_ROWS + [extra]))
+    assert bool(labels.loc["pFuture", "selected_by_future"]) is selected
+    assert bool(labels.loc["pFuture", label_columns(cfg)].isna().all()) is selected
+
+
+def test_selected_by_future_threshold_is_the_configured_minimum(cfg: Config) -> None:
+    one = replace(cfg, data=replace(cfg.data, min_conditions_per_patient=1))
+    labels = _labels(one)
+    assert not labels["selected_by_future"].any()
+    assert labels.loc["pFuture", label_columns(one)].tolist() == [1.0, 1.0, 0.0, 0.0]
+
+
+def test_selected_by_future_ranks_below_early_death_and_above_prevalence(cfg: Config) -> None:
+    died = _labels(cfg, patients=_patients(DEATHS | {"pFuture": "2022-06-01"}))
+    assert died.loc["pFuture", "selected_by_future"]  # still flagged
+    assert _statuses(died, cfg, "pFuture") == [DIED_BEFORE_CUTOFF] * 4
+    # Its one pre-cutoff code is g2's: selected by post-cutoff codes, not "had it before".
+    rows = [r for r in EVENT_ROWS if r[:2] != ("pFuture", "2021-01-01")]
+    held = _labels(cfg, events=_events(rows + [("pFuture", "2021-01-01", "B")]))
+    assert _statuses(held, cfg, "pFuture") == [SELECTED_BY_FUTURE] * 4
+    # A death in the horizon does not turn its masked mortality into a 1.
+    dead_later = _labels(cfg, patients=_patients(DEATHS | {"pFuture": "2024-06-01"}))
+    assert dead_later.loc["pFuture", "died_in_horizon"]
+    assert _statuses(dead_later, cfg, "pFuture") == [SELECTED_BY_FUTURE] * 4
+
+
 # --- The primary target: any_onset -----------------------------------------------------
 
 
@@ -232,6 +359,45 @@ def test_any_onset_pools_the_group_labels(cfg: Config) -> None:
     assert pooled.isna().equals(groups.isna().all(axis=1))  # masked iff every group is
     assert (pooled == 1).equals((groups == 1).any(axis=1))
     assert (pooled == 0).equals(groups.notna().any(axis=1) & ~(groups == 1).any(axis=1))
+
+
+def test_pooled_onset_status_is_row_wise_over_any_number_of_groups() -> None:
+    statuses = np.array([
+        [PREVALENT, NEGATIVE, POSITIVE],
+        [PREVALENT, PREVALENT, NEGATIVE],
+        [LOST_TO_FOLLOW_UP, PREVALENT, LOST_TO_FOLLOW_UP],
+        [PREVALENT, PREVALENT, PREVALENT],
+    ])
+    assert pooled_onset_status(statuses).tolist() == [
+        POSITIVE, NEGATIVE, LOST_TO_FOLLOW_UP, PREVALENT
+    ]
+    assert pooled_onset_status(statuses[:, :1]).tolist() == [
+        PREVALENT, PREVALENT, LOST_TO_FOLLOW_UP, PREVALENT
+    ]
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        ((SELECTED_BY_FUTURE, DIED_BEFORE_CUTOFF), DIED_BEFORE_CUTOFF),
+        ((LOST_AFTER_ONSET, SELECTED_BY_FUTURE), SELECTED_BY_FUTURE),
+        ((DIED_WITHOUT_ONSET, LOST_TO_FOLLOW_UP), LOST_TO_FOLLOW_UP),
+        ((DIED_WITHOUT_ONSET, LOST_AFTER_ONSET), LOST_AFTER_ONSET),
+    ],
+)
+def test_pooled_masked_reason_follows_the_documented_order(
+    statuses: tuple[str, str], expected: str
+) -> None:
+    assert pooled_onset_status(np.array([statuses])).tolist() == [expected]
+
+
+def test_any_onset_counts_a_patient_with_several_new_onsets_once(cfg: Config) -> None:
+    labels = _labels(cfg, events=_events(EVENT_ROWS + [
+        ("pNeg", "2023-06-01", "A1"), ("pNeg", "2024-06-01", "B"),
+    ]))
+    assert labels.loc["pNeg", target_columns(cfg)].tolist() == [1.0, 1.0, 1.0]
+    summary = label_summary(labels, [ANY_ONSET]).iloc[0]
+    assert (summary.observed, summary.positives) == (5, 4)  # pNeg is one positive patient
 
 
 def test_lost_to_follow_up_needs_an_encounter_on_or_after_the_date(cfg: Config) -> None:
@@ -401,6 +567,136 @@ def test_saved_splits_do_not_overlap(cfg: Config) -> None:
     cfg.paths.splits_json.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="more than one split"):
         load_splits(cfg)
+
+
+@pytest.mark.parametrize(
+    ("size", "counts"),
+    [  # train / val / test for fractions 0.7 / 0.15 / 0.15
+        (1, [1, 0, 0]),
+        (2, [2, 0, 0]),  # remainders 0.4 / 0.3 / 0.3
+        (3, [2, 1, 0]),  # remainders 0.1 / 0.45 / 0.45: the tie goes to val, listed first
+        (4, [3, 1, 0]),  # remainders 0.8 / 0.6 / 0.6
+        (6, [4, 1, 1]),  # remainders 0.2 / 0.9 / 0.9
+    ],
+)
+def test_stratified_split_gives_leftovers_to_the_largest_remainders(
+    size: int, counts: list[int]
+) -> None:
+    strata = pd.Series("s", index=[f"p{i}" for i in range(size)])
+    split = stratified_split(strata, {"train": 0.7, "val": 0.15, "test": 0.15}, seed=42)
+    assert split.value_counts().reindex(list(SPLITS), fill_value=0).tolist() == counts
+
+
+def test_stratified_split_breaks_ties_in_the_order_of_the_fractions() -> None:
+    strata = pd.Series("s", index=["p0", "p1", "p2"])  # quotas 2.1 / 0.45 / 0.45
+    val_first = stratified_split(strata, {"train": 0.7, "val": 0.15, "test": 0.15}, seed=42)
+    test_first = stratified_split(strata, {"train": 0.7, "test": 0.15, "val": 0.15}, seed=42)
+    assert sorted(val_first) == ["train", "train", "val"]
+    assert sorted(test_first) == ["test", "train", "train"]
+
+
+@pytest.mark.parametrize("seed", [42, 7])
+def test_stratified_split_counts_stay_within_one_patient_of_each_quota(seed: int) -> None:
+    sizes = np.random.default_rng(seed).integers(1, 60, size=15)
+    strata = pd.Series(np.repeat([f"s{i:02d}" for i in range(len(sizes))], sizes),
+                       index=[f"p{i:04d}" for i in range(sizes.sum())])
+    fractions = {"train": 0.7, "val": 0.15, "test": 0.15}
+    split = stratified_split(strata, fractions, seed)
+    assert split.notna().all()
+    counts = pd.crosstab(strata, split).reindex(columns=list(SPLITS), fill_value=0)
+    assert counts.sum(axis=1).tolist() == sizes.tolist()
+    quotas = np.outer(sizes, [fractions[name] for name in SPLITS])
+    assert (np.abs(counts.to_numpy() - quotas) < 1).all()
+
+
+def test_stratified_split_does_not_depend_on_the_order_of_the_strata() -> None:
+    a, b = [f"a{i}" for i in range(7)], [f"b{i}" for i in range(7)]
+    fractions = {"train": 0.7, "val": 0.15, "test": 0.15}
+    blocks = stratified_split(pd.Series(["a"] * 7 + ["b"] * 7, index=a + b), fractions, 42)
+    flipped = stratified_split(pd.Series(["b"] * 7 + ["a"] * 7, index=b + a), fractions, 42)
+    mixed_ids = [p for pair in zip(a, b) for p in pair]
+    mixed = stratified_split(pd.Series([p[0] for p in mixed_ids], index=mixed_ids), fractions, 42)
+    assert blocks.equals(flipped.loc[blocks.index])
+    assert blocks.equals(mixed.loc[blocks.index])
+
+
+def test_save_labels_needs_every_patient_in_exactly_one_split(cfg: Config) -> None:
+    labels = attach_phenotypes(_labels(cfg).reset_index(), pd.Series(dtype="int64"))
+    split = stratified_split(split_strata(labels), split_fractions(cfg), cfg.seed)
+    unassigned = split.copy()
+    unassigned.iloc[0] = pd.NA
+    for bad in (unassigned, split.iloc[::-1], split.iloc[1:]):
+        with pytest.raises(ValueError, match="exactly one split"):
+            save_labels(labels, bad, cfg)
+    assert not cfg.paths.labels_parquet.exists() and not cfg.paths.splits_json.exists()
+
+
+# --- The labels report -------------------------------------------------------------------
+
+DESCRIPTIONS = {
+    "A1": "Alpha one (disorder)", "A2": "Alpha two (finding)", "B": "Beta (disorder)",
+    "X": "Ex (disorder)", "Y": "Why",
+}
+
+
+def _report(cfg: Config, tmp_path: Path) -> str:
+    """``write_labels_summary`` of the fixture, g2 borderline and g1 near the threshold."""
+    cfg = replace(
+        cfg,
+        paths=replace(cfg.paths, labels_summary_md=tmp_path / "labels_summary.md"),
+        labels=replace(cfg.labels, borderline_groups=("g2",), near_threshold_groups=("g1",)),
+    )
+    clusters = pd.Series([1, 1, 2, 2, 3, 3, 1], index=list(PATIENT_IDS[:7]))  # pFuture unclustered
+    labels = attach_phenotypes(_labels(cfg).reset_index(), clusters)
+    labels[SPLIT] = ["train", "train", "val", "test", "train", "val", "test", "train"]
+    phenotypes = pd.DataFrame({"cluster": [1, 1, 2], "rank": [2, 1, 1], "code": ["Y", "X", "A1"]})
+    text = write_labels_summary(labels, phenotypes, DESCRIPTIONS, cfg)
+    assert cfg.paths.labels_summary_md.read_text(encoding="utf-8") == text
+    return text
+
+
+def test_report_counts_the_censoring_rules(cfg: Config, tmp_path: Path) -> None:
+    text = _report(cfg, tmp_path)
+    assert "| Died before the cutoff: every label masked | 1 | all |" in text
+    assert ("| Selected by post-cutoff codes (fewer than 2 distinct codes before the cutoff): "
+            "every label masked | 1 | all |") in text
+    # (a) pLost: g1 seen in the horizon and then lost, g2 never seen: 2 entries, 1 an onset.
+    assert ("| (a) Alive through the horizon, last encounter before 2025-01-01: every onset "
+            "label masked | 1 | 2 |") in text
+    assert "Rule (a) also masks 1 onsets that fall in the horizon" in text
+    # (b) pDied: g1 before death kept as a 1, g2 masked.
+    assert "| (b) Died in the horizon: onset labels without that onset masked | 1 | 1 |" in text
+    assert "rule (b) keeps the 1 onsets seen before death as positives" in text
+
+
+def test_report_group_table_and_review_flags(cfg: Config, tmp_path: Path) -> None:
+    text = _report(cfg, tmp_path)
+    assert "| g1 | Alpha one (disorder) (A1); Alpha two (finding) (A2) |" in text
+    # Had it before, new onsets, negatives, rate, (a) lost (after onset), (b) died,
+    # died before, selected by future, review (min_onsets 30).
+    assert "| g1 | 1 | 2 | 2 | 50.0% | 1 (1) | 0 | 1 | 1 | keep, **< 30 onsets** |" in text
+    assert ("| g2 | 0 | 1 | 3 | 25.0% | 1 (0) | 1 | 1 | 1 | "
+            "keep, **borderline**, **< 30 onsets** |") in text
+    assert "`g1` (2 onsets) is also near the threshold." in text
+
+
+def test_report_any_onset_mortality_split_and_phenotypes(cfg: Config, tmp_path: Path) -> None:
+    text = _report(cfg, tmp_path)
+    assert "Positives / observed: 3 / 5 (60.0%); masked: 3. 0 of the positives" in text
+    for row in ("| positive | 1 | 3 |", "| negative | 0 | 2 |",
+                "| died before cutoff | masked | 1 |",
+                "| selected by post-cutoff codes | masked | 1 |",
+                "| lost to follow-up after onset | masked | 1 |"):
+        assert row in text
+    assert "had every group before cutoff" not in text  # no such patient: no row
+    assert "With mortality masked too, so every label: 2" in text  # pEarly and pFuture
+    assert "Died 2023-01-01 to 2026-01-01 (exclusive): 1 (16.7%). Masked: 2." in text
+    assert "| Patients | 4 | 2 | 2 |" in text
+    assert "| any_onset (primary) | 1 / 2 (50.0%) | 0 / 1 (0.0%) | 2 / 2 (100.0%) |" in text
+    assert "| mortality (descriptive only) | 0 / 2 (0.0%) | 0 / 2 (0.0%) | 1 / 2 (50.0%) |" in text
+    assert "| 1 | 3 | Ex, Why |" in text  # in rank order, semantic tags dropped
+    assert "| 2 | 2 | Alpha one |" in text
+    assert "| 3 | 2 | (no chronic condition common enough to list) |" in text
 
 
 # --- The saved project data ---------------------------------------------------------------

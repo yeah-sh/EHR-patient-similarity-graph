@@ -7,7 +7,9 @@ torch==2.15.0
 umap-learn==0.5.12
 plotly==7.1.0
 matplotlib==3.11.2
+pillow==13.0.0
 streamlit==1.66.1
 pyyaml==6.0.3
 pytest==9.2.0
+pytest-cov==7.1.0
 tqdm==4.70.1
