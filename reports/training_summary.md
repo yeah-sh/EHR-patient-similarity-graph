@@ -14,7 +14,7 @@ Built by `scripts/06_train.py`. All 2,581 model-cohort patients.
 
 ## Result
 
-Best epoch **74** of 94 run (stopped by early stopping after 20 epochs without improvement); training time 11.6 s.
+Best epoch **74** of 94 run (stopped by early stopping after 20 epochs without improvement); training time 14.4 s.
 
 | Validation | Positives / observed | AUROC | AUPRC | AUPRC of a random score |
 | --- | ---: | ---: | ---: | ---: |
@@ -36,20 +36,20 @@ Same 335 validation patients for every model; percentile bootstrap, 1,000 resamp
 | TemporalGCN, Phase 6 setting | 6 windows + graphs | 0.679 (0.607 to 0.743) | 0.266 (0.202 to 0.349) | -0.001 (-0.055 to +0.049) |
 | TemporalGCN, Phase 6 setting | 6 windows + graphs, age and sex in the heads | 0.662 (0.590 to 0.725) | 0.255 (0.195 to 0.336) | +0.016 (-0.041 to +0.070) |
 
-## Calibration (temperature scaling)
+## Calibration (Platt scaling)
 
-`any_onset` probabilities are `sigmoid(logit / T)` with **T = 0.986**, fitted by minimizing the log loss on the 335 validation patients with an observed label (63 positives, rate 0.188); saved to `temperature.json`. A temperature preserves the ranking, so AUROC and AUPRC do not change. "After" is scored on the patients T was fitted on (optimistic); "cross-fitted" scores each patient with a T fitted on the other 4 of 5 stratified folds (fold temperatures 1.02, 1.05, 0.87, 0.88, 1.12); its AUROC and AUPRC pool folds scored with different temperatures, so they move slightly.
+`any_onset` probabilities are `sigmoid(a * logit + b)` with **a = 0.796, b = -1.272**: Platt scaling, a logistic regression of the label on the logit with an intercept, fitted by maximum likelihood on the 335 validation patients with an observed label (63 positives, rate 0.188); saved to `calibration.json`. A positive slope preserves the ranking, so AUROC and AUPRC do not change. "After" is scored on the patients it was fitted on (optimistic); "cross-fitted" scores each patient with a calibrator fitted on the other 4 of 5 stratified folds (fold fits: a = 0.743, b = -1.251; a = 0.748, b = -1.271; a = 0.925, b = -1.263; a = 0.916, b = -1.254; a = 0.683, b = -1.319); its AUROC and AUPRC pool folds scored with different calibrators, so they move slightly.
 
 | Validation | Before | After | After, cross-fitted |
 | --- | ---: | ---: | ---: |
-| AUROC | 0.678 | 0.678 | 0.672 |
-| AUPRC | 0.284 | 0.284 | 0.273 |
-| Brier score | 0.205 | 0.205 | 0.208 |
-| Log loss | 0.584 | 0.584 | 0.590 |
-| ECE | 0.225 | 0.225 | 0.227 |
-| Mean predicted probability | 0.414 | 0.413 | 0.415 |
+| AUROC | 0.678 | 0.678 | 0.669 |
+| AUPRC | 0.284 | 0.284 | 0.269 |
+| Brier score | 0.205 | 0.144 | 0.146 |
+| Log loss | 0.584 | 0.448 | 0.451 |
+| ECE | 0.225 | 0.035 | 0.048 |
+| Mean predicted probability | 0.414 | 0.188 | 0.190 |
 
-ECE: expected calibration error over 10 equal-count bins. The model is trained with `pos_weight` = negatives / positives, which shifts its logits upward; a temperature only rescales logits around 0 and cannot remove such a shift, so compare the mean predicted probability with the observed rate.
+ECE: expected calibration error over 10 equal-count bins. The model is trained with `pos_weight` = negatives / positives, which shifts its logits upward; the intercept removes that shift, so the mean predicted probability should now be close to the observed rate.
 
 ![Reliability diagram](figures/reliability_any_onset.png)
 

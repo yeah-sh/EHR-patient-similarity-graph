@@ -46,6 +46,30 @@ def test_values_are_typed() -> None:
     assert config.paths.raw_dir == (PROJECT_ROOT / "data" / "raw").resolve()
 
 
+def test_graph_ae_and_embedding_eval_sections() -> None:
+    config = load_config()
+    graph_ae, embedding_eval = config.graph_ae, config.embedding_eval
+    assert graph_ae.embed_dim == embedding_eval.dim == 32
+    assert graph_ae.next_window_weight == 1.0
+    assert graph_ae.tuning_next_window_weights == (0.5, 1.0, 2.0)
+    assert graph_ae.tuning_seeds == (42, 43, 44)
+    assert embedding_eval.min_train_onsets == 20 and embedding_eval.n_neighbours == 5
+    assert config.paths.graph_ae_dir.name == "graph_ae"
+
+
+@pytest.mark.parametrize(("section", "key", "value"), [
+    ("graph_ae", "tuning_next_window_weights", []),
+    ("graph_ae", "next_window_weight", 0.0),
+    ("graph_ae", "dropout", 1.0),
+    ("embedding_eval", "min_train_onsets", 0),
+    ("embedding_eval", "C", 0.0),
+])
+def test_phase_7b_values_are_validated(tmp_path: Path, section: str, key: str,
+                                       value: object) -> None:
+    with pytest.raises(ValueError, match=section):
+        load_config(_write_variant(tmp_path, section, key, value))
+
+
 def test_code_filter_is_typed() -> None:
     code_filter = load_config().data.code_filter
     assert code_filter.keep_suffixes == ("(disorder)",)
@@ -182,6 +206,35 @@ def test_use_demographics_must_be_a_boolean(tmp_path: Path) -> None:
     ("evaluation", "temperature_bounds", [2.0, 100.0], "temperature_bounds"),
 ])
 def test_phase_6b_values_are_validated(
+    tmp_path: Path, section: str, key: str, value: object, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        load_config(_write_variant(tmp_path, section, key, value))
+
+
+def test_phase_7_settings_are_typed() -> None:
+    config = load_config()
+    assert config.calibration.method == "platt"
+    assert config.paths.calibration_json.name == "calibration.json"
+    cv = config.cross_validation
+    assert (cv.folds, cv.seeds, cv.inner_val) == (5, (42, 43, 44), pytest.approx(0.15))
+    assert isinstance(cv.rewire_swaps_per_edge, int)
+    analysis = config.embedding_analysis
+    assert analysis.chronic_count_bins[0] == 0 and analysis.chronic_count_bins[-1] == float("inf")
+    assert (analysis.trajectory_patients, analysis.neighbour_patients, analysis.n_neighbours) == (
+        5, 3, 5)
+
+
+@pytest.mark.parametrize(("section", "key", "value", "match"), [
+    ("calibration", "method", "isotonic", "calibration.method"),
+    ("cross_validation", "folds", 1, "folds"),
+    ("cross_validation", "inner_val", 1.0, "inner_val"),
+    ("cross_validation", "seeds", [], "seeds"),
+    ("cross_validation", "demographic_rank_correlation", 1.5, "demographic_rank_correlation"),
+    ("embedding_analysis", "chronic_count_bins", [1, 2, 3], "chronic_count_bins"),
+    ("embedding_analysis", "umap_n_neighbors", 1, "umap_n_neighbors"),
+])
+def test_phase_7_values_are_validated(
     tmp_path: Path, section: str, key: str, value: object, match: str
 ) -> None:
     with pytest.raises(ValueError, match=match):

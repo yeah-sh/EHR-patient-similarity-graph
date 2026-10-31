@@ -22,6 +22,7 @@ conda run -n ehrgraph python scripts/05_build_labels.py       # onset labels and
 conda run -n ehrgraph python scripts/06a_baselines.py         # logistic-regression baselines (validation)
 conda run -n ehrgraph python scripts/06b_tune.py              # hyperparameter search (validation)
 conda run -n ehrgraph python scripts/06_train.py [--quick]    # temporal GCN, embeddings, calibration
+conda run -n ehrgraph python scripts/07_evaluate.py [--reuse-cv] # cross-validation, test set, embeddings
 conda run -n ehrgraph python -m pytest                        # tests
 ```
 
@@ -54,8 +55,28 @@ model-cohort patients**:
 - **Demographics enter the heads only.** With `model.use_demographics`, age on the cutoff date
   (standardized with training-split statistics) and sex are concatenated to the trajectory
   embedding before the prediction heads. They never enter the graphs or the node features.
-- **Calibration.** `06_train.py` fits a temperature on the validation logits of `any_onset`
-  (`artifacts/temperature.json`); calibrated probability = `sigmoid(logit / T)`.
+- **Calibration.** `06_train.py` fits Platt scaling on the validation logits of `any_onset`
+  (`artifacts/calibration.json`); calibrated probability = `sigmoid(slope * logit + intercept)`.
+  Set `calibration.method: temperature` for temperature scaling (`sigmoid(logit / T)`) instead.
 
 Use `--quick` for a smoke test: 5 epochs on 300 patients and the subgraph they induce, written
 to `artifacts/quick/`. Results are in `reports/training_summary.md`.
+
+## Evaluation (Phase 7)
+
+`scripts/07_evaluate.py` keeps every hyperparameter fixed and runs:
+
+- **5-fold cross-validation (the main comparison)** on every patient with an observed
+  `any_onset`, folds stratified by phenotype cluster x label. In each fold 15% of the training
+  folds pick the GCNs' epochs and fit every model's Platt scaling; GCNs use 3 seeds, logits
+  averaged. Eight models, from age and sex alone to the full TemporalGCN, including the
+  ablations without a graph (`A_hat = I`), without time (final window only) and with randomly
+  rewired graphs. The GCN hyperparameters were tuned on the original validation split, so these
+  estimates are slightly optimistic.
+- **The held-out test set, scored once**, with the final model of `06_train.py`.
+- **Embedding analysis** of the final model: UMAP, cluster separation, nearest neighbours and
+  per-year trajectories.
+
+Results are in `reports/results.md` (and `results.csv`); plain-language findings in
+`reports/evaluation_summary.md`. `--reuse-cv` rebuilds the reports from the saved out-of-fold
+predictions (`artifacts/cv_oof_predictions.csv`) without retraining.

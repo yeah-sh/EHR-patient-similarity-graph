@@ -24,6 +24,7 @@ from ehrgraph.train import (
     TrainingData,
     TrainOutputs,
     fit,
+    load_model_data,
     load_trained_model,
     load_training_data,
     make_training_data,
@@ -398,6 +399,17 @@ def test_project_training_data_drops_test_labels() -> None:
     test = torch.from_numpy(data.split == "test")
     assert torch.isnan(data.any_onset[test]).all() and torch.isnan(data.onsets[test]).all()
     assert (~torch.isnan(data.any_onset[~test])).sum() == 335 + 1556  # val + train observed
+
+
+@_needs_labels
+def test_project_model_data_keeps_every_split_and_matches_the_training_data() -> None:
+    model_data = load_model_data(_PROJECT)
+    test = (model_data.labels["split"] == "test").to_numpy()
+    assert model_data.labels.loc[test, ANY_ONSET].notna().sum() == 330  # test labels present
+    data = load_training_data(_PROJECT)
+    assert data.patient_ids == model_data.patient_ids
+    torch.testing.assert_close(data.features[-1], torch.from_numpy(
+        model_data.matrices[-1].toarray().astype(np.float32)))
 
 
 @_needs_labels

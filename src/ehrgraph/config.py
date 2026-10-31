@@ -73,7 +73,7 @@ class PathsConfig:
     trajectory_embeddings_npy: Path
     training_curves_fig: Path
     training_summary_md: Path
-    temperature_json: Path
+    calibration_json: Path
     reliability_fig: Path
     quick_dir: Path
     baseline_results_csv: Path
@@ -81,6 +81,28 @@ class PathsConfig:
     baseline_val_scores_csv: Path
     tuning_results_csv: Path
     tuning_summary_md: Path
+    results_md: Path
+    results_csv: Path
+    evaluation_summary_md: Path
+    cv_predictions_csv: Path
+    cv_fits_csv: Path
+    test_predictions_csv: Path
+    cv_auroc_fig: Path
+    test_reliability_fig: Path
+    umap_phenotype_fig: Path
+    umap_age_fig: Path
+    umap_chronic_fig: Path
+    trajectory_umap_fig: Path
+    graph_ae_dir: Path
+    embeddings_npz: Path
+    embedding_results_md: Path
+    embedding_results_csv: Path
+    embedding_summary_md: Path
+    ae_umap_phenotype_fig: Path
+    ae_umap_age_fig: Path
+    ae_umap_chronic_fig: Path
+    ae_trajectory_fig: Path
+    next_year_auroc_fig: Path
 
 
 @dataclass(frozen=True)
@@ -237,6 +259,74 @@ class EvaluationConfig:
     temperature_bounds: tuple[float, float]
 
 
+# Calibration methods of the any_onset logits (evaluate.fit_calibrator).
+CALIBRATION_METHODS: tuple[str, ...] = ("platt", "temperature")
+
+
+@dataclass(frozen=True)
+class CalibrationConfig:
+    """How ``any_onset`` logits become probabilities; one of ``CALIBRATION_METHODS``."""
+
+    method: str
+
+
+@dataclass(frozen=True)
+class CrossValidationConfig:
+    """Phase 7 cross-validation; see ``evaluate.run_cross_validation``."""
+
+    folds: int
+    inner_val: float
+    seeds: tuple[int, ...]
+    rewire_swaps_per_edge: int
+    demographic_rank_correlation: float
+
+
+@dataclass(frozen=True)
+class EmbeddingAnalysisConfig:
+    """Phase 7 embedding analysis; see ``evaluate.analyse_embeddings``."""
+
+    umap_n_neighbors: int
+    umap_min_dist: float
+    chronic_count_bins: tuple[float, ...]
+    trajectory_patients: int
+    trajectory_min_onsets: int
+    max_onset_labels: int
+    onset_label_chars: int
+    neighbour_patients: int
+    n_neighbours: int
+    neighbour_min_conditions: int
+
+
+@dataclass(frozen=True)
+class GraphAEConfig:
+    """Phase 7b self-supervised temporal graph autoencoder; see ``train.fit_graph_ae``."""
+
+    hidden_dim: int
+    embed_dim: int
+    dropout: float
+    lr: float
+    weight_decay: float
+    epochs: int
+    patience: int
+    grad_clip_norm: float
+    next_window_weight: float
+    log_every_epochs: int
+    tuning_next_window_weights: tuple[float, ...]
+    tuning_seeds: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class EmbeddingEvalConfig:
+    """Phase 7b embedding comparison; see ``embeddings``."""
+
+    dim: int
+    min_train_onsets: int
+    C: float
+    max_iter: int
+    balanced_class_weight: bool
+    n_neighbours: int
+
+
 @dataclass(frozen=True)
 class SplitConfig:
     """Train/validation/test fractions; must sum to 1."""
@@ -280,6 +370,11 @@ class Config:
     baselines: BaselinesConfig
     tuning: TuningConfig
     evaluation: EvaluationConfig
+    calibration: CalibrationConfig
+    cross_validation: CrossValidationConfig
+    embedding_analysis: EmbeddingAnalysisConfig
+    graph_ae: GraphAEConfig
+    embedding_eval: EmbeddingEvalConfig
     split: SplitConfig
     summary: SummaryConfig
 
@@ -463,6 +558,58 @@ def _validate(config: Config) -> None:
         raise ValueError(
             f"evaluation.temperature_bounds must satisfy 0 < low < 1 < high, got {(low, high)}"
         )
+    if config.calibration.method not in CALIBRATION_METHODS:
+        raise ValueError(
+            f"calibration.method must be one of {list(CALIBRATION_METHODS)}, "
+            f"got {config.calibration.method!r}"
+        )
+
+    cv = config.cross_validation
+    if cv.folds < 2 or not 0.0 < cv.inner_val < 1.0:
+        raise ValueError("cross_validation: folds must be >= 2 and inner_val in (0, 1)")
+    if not cv.seeds or cv.rewire_swaps_per_edge < 1:
+        raise ValueError(
+            "cross_validation: seeds must not be empty and rewire_swaps_per_edge must be >= 1"
+        )
+    if not 0.0 < cv.demographic_rank_correlation <= 1.0:
+        raise ValueError("cross_validation.demographic_rank_correlation must lie in (0, 1]")
+
+    analysis = config.embedding_analysis
+    counts = ("umap_n_neighbors", "trajectory_patients", "max_onset_labels", "onset_label_chars",
+              "neighbour_patients", "n_neighbours")
+    bad = [name for name in counts if getattr(analysis, name) < 1]
+    if bad or analysis.umap_n_neighbors < 2 or analysis.umap_min_dist < 0:
+        raise ValueError(
+            f"embedding_analysis: these values must be positive: {bad}; umap_n_neighbors >= 2 "
+            "and umap_min_dist >= 0"
+        )
+    edges = analysis.chronic_count_bins
+    if len(edges) < 3 or edges[0] != 0 or any(b <= a for a, b in zip(edges, edges[1:])):
+        raise ValueError(
+            "embedding_analysis.chronic_count_bins must start at 0, increase strictly and "
+            f"give at least 2 bins, got {list(edges)}"
+        )
+
+    graph_ae = config.graph_ae
+    positive = ("hidden_dim", "embed_dim", "epochs", "patience", "log_every_epochs", "lr",
+                "grad_clip_norm")
+    bad = [name for name in positive if getattr(graph_ae, name) <= 0]
+    if bad:
+        raise ValueError(f"graph_ae: these values must be positive: {bad}")
+    if not 0.0 <= graph_ae.dropout < 1.0 or graph_ae.weight_decay < 0:
+        raise ValueError("graph_ae: dropout must lie in [0, 1) and weight_decay be >= 0")
+    weights = (graph_ae.next_window_weight, *graph_ae.tuning_next_window_weights)
+    if not graph_ae.tuning_next_window_weights or not graph_ae.tuning_seeds or min(weights) <= 0:
+        raise ValueError("graph_ae: the next-window weights must be positive and the tuning "
+                         "lists must not be empty")
+
+    embedding_eval = config.embedding_eval
+    counts = ("dim", "min_train_onsets", "max_iter", "n_neighbours")
+    bad = [name for name in counts if getattr(embedding_eval, name) < 1]
+    if embedding_eval.C <= 0:
+        bad.append("C")
+    if bad:
+        raise ValueError(f"embedding_eval: these values must be positive: {bad}")
 
     # A canonical code that is itself merged would make the result depend on order.
     code_merge = config.data.code_merge

@@ -1060,6 +1060,19 @@ def load_model_inputs(cfg: Config) -> ModelInputs:
     return ModelInputs(years, tuple(cohort["patient_ids"]), rows, matrices)
 
 
+def load_feature_codes(cfg: Config) -> tuple[str, ...]:
+    """Read the feature vocabulary: the codes of the first columns (the code block).
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        The codes, in column order.
+    """
+    meta = json.loads((cfg.paths.features_dir / FEATURES_JSON).read_text(encoding="utf-8"))
+    return tuple(str(code) for code in meta["feature_codes"])
+
+
 def patient_demographics(
     patients: pd.DataFrame, patient_ids: Sequence[str], as_of: date
 ) -> pd.DataFrame:

@@ -33,6 +33,18 @@ Tuning (``scripts/06b_tune.py``, validation only)::
     results = tune(data, cfg.model, settings, cfg.tuning.seeds)  # one row per run
     summary = summarize_tuning(results)
     best = select_setting(summary, cfg.tuning.tie_tolerance)
+
+Phase 7b, the self-supervised TemporalGraphAE (``scripts/07b_embeddings.py``)::
+
+    data = load_graph_ae_data(cfg)  # features, graphs, next-window targets; no labels
+    runs, fits = tune_graph_ae(data, cfg.graph_ae)  # validation next-window loss only
+    weight, summary = select_next_window_weight(runs)
+    result = fit_graph_ae(data, replace(cfg.graph_ae, next_window_weight=weight), cfg.seed)
+
+Its next-window targets are the codes active in windows 2018-2022 (pairs 2017->2018 ...
+2021->2022); no later window is read. Training-split nodes' next-window terms enter
+the loss, validation-split nodes' pick the epoch, and test-split nodes' enter neither:
+test nodes only pass messages and appear in the link term.
 """
 
 from __future__ import annotations
@@ -45,6 +57,7 @@ import os
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, replace
+from datetime import date
 from pathlib import Path
 from time import perf_counter
 from typing import Any, NamedTuple
@@ -58,22 +71,36 @@ from matplotlib.figure import Figure
 from sklearn.metrics import average_precision_score, roc_auc_score
 from torch import Tensor
 
-from ehrgraph.config import Config, ModelConfig, TuningConfig
+from ehrgraph.config import Config, GraphAEConfig, ModelConfig, TuningConfig
 from ehrgraph.data import chart_style, load_patients, markdown_table, save_figure
-from ehrgraph.features import DEMOGRAPHICS, load_model_inputs, patient_demographics
+from ehrgraph.features import (
+    DEMOGRAPHICS,
+    load_feature_codes,
+    load_model_inputs,
+    patient_demographics,
+)
 from ehrgraph.graph import load_graphs, normalize_adjacency
-from ehrgraph.labels import ANY_ONSET, ONSET_PREFIX, SPLIT, load_labels
+from ehrgraph.labels import ANY_ONSET, ONSET_PREFIX, SPLIT, load_labels, load_splits
 from ehrgraph.models import (
     EdgeDropper,
+    LinkSampler,
     ModelOutput,
     OnsetModel,
+    TemporalGraphAE,
+    build_graph_ae,
     build_model,
+    graph_ae_loss,
     graph_smoothness,
+    link_logits,
+    link_loss,
+    masked_bce,
     onset_loss,
+    pc1_share,
     positive_weights,
     smoothness_laplacian,
     sparse_tensor,
 )
+from ehrgraph.trajectories import TrajectoryWindows, load_windows
 from ehrgraph.utils import set_seed
 
 logger = logging.getLogger(__name__)
@@ -90,6 +117,11 @@ TUNED_FIELDS: tuple[str, ...] = (
 TUNING_RUN_COLUMNS: list[str] = [
     "setting", *TUNED_FIELDS, "seed", "best_epoch", "epochs_run", "val_auroc", "val_auprc",
     "train_auroc", "seconds",
+]
+# One row per TemporalGraphAE tuning run (tune_graph_ae); losses at the best epoch.
+GRAPH_AE_RUN_COLUMNS: list[str] = [
+    "next_window_weight", "seed", "best_epoch", "epochs_run", "val_next_loss", "train_next_loss",
+    "link_loss", "link_auroc", "pc1_share", "seconds",
 ]
 
 # Chart tokens from the dataviz reference palette (as in data.py and graph.py):
@@ -140,6 +172,34 @@ class TrainingData:
     age_sd: float
 
 
+@dataclass(frozen=True)
+class ModelData:
+    """The Phase 3-5 outputs that ``make_training_data`` takes, as loaded.
+
+    Attributes:
+        patient_ids: Node order: the model cohort.
+        years: The windows, oldest first; all close by the prediction cutoff.
+        matrices: Sparse (N, F) features per window.
+        weights: ``W`` per window, CSR (N, N).
+        adjacency: ``A_hat`` per window, CSR (N, N).
+        labels: ``labels.load_labels`` output in node order: every label column, the
+            phenotype cluster and the split. Test labels are included: they leave
+            this object only through ``make_training_data`` (which drops them) or the
+            Phase 7 test evaluation.
+        groups: Onset group names, in config order.
+        demographics: ``features.patient_demographics`` (unstandardized), node order.
+    """
+
+    patient_ids: tuple[str, ...]
+    years: tuple[int, ...]
+    matrices: list[sp.csr_matrix]
+    weights: list[sp.csr_matrix]
+    adjacency: list[sp.csr_matrix]
+    labels: pd.DataFrame
+    groups: tuple[str, ...]
+    demographics: pd.DataFrame
+
+
 class PosWeights(NamedTuple):
     """``pos_weight`` of each target, from the training split's observed labels."""
 
@@ -184,7 +244,7 @@ class TrainOutputs:
     trajectory_embeddings_npy: Path
     training_curves_fig: Path
     training_summary_md: Path
-    temperature_json: Path
+    calibration_json: Path
     reliability_fig: Path
 
     @classmethod
@@ -262,11 +322,45 @@ def make_training_data(
     )
 
 
-def load_training_data(cfg: Config, n_patients: int | None = None) -> TrainingData:
+def load_model_data(cfg: Config) -> ModelData:
     """Load the Phase 3-5 outputs (model inputs, graphs, labels) and the demographics.
 
     Demographics are age on ``labels.cutoff_date`` and sex
-    (``features.patient_demographics``).
+    (``features.patient_demographics``). The labels include the test split's: pass
+    them through ``make_training_data`` before training.
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        Every input of the model cohort, in node order.
+
+    Raises:
+        ValueError: If the inputs, graphs and labels disagree on the nodes.
+    """
+    inputs = load_model_inputs(cfg)
+    graphs = load_graphs(cfg)
+    labels = load_labels(cfg)
+    if graphs.patient_ids != inputs.patient_ids or graphs.years != inputs.years:
+        raise ValueError("the graphs do not match the model inputs; re-run scripts/04_build_graphs.py")
+    if not (labels["node"].to_numpy() == np.arange(len(inputs.patient_ids))).all():
+        raise ValueError("labels.parquet is not in node order; re-run scripts/05_build_labels.py")
+    return ModelData(
+        patient_ids=inputs.patient_ids,
+        years=inputs.years,
+        matrices=inputs.matrices,
+        weights=graphs.weights,
+        adjacency=graphs.adjacency,
+        labels=labels,
+        groups=tuple(cfg.labels.onset_groups),
+        demographics=patient_demographics(
+            load_patients(cfg), inputs.patient_ids, cfg.labels.cutoff_date
+        ),
+    )
+
+
+def load_training_data(cfg: Config, n_patients: int | None = None) -> TrainingData:
+    """Load ``load_model_data`` as training data, test labels dropped.
 
     Args:
         cfg: Project configuration.
@@ -282,15 +376,9 @@ def load_training_data(cfg: Config, n_patients: int | None = None) -> TrainingDa
         ValueError: If the inputs, graphs and labels disagree on the nodes, or
             ``n_patients`` exceeds the cohort.
     """
-    inputs = load_model_inputs(cfg)
-    graphs = load_graphs(cfg)
-    labels = load_labels(cfg)
-    n = len(inputs.patient_ids)
-    if graphs.patient_ids != inputs.patient_ids or graphs.years != inputs.years:
-        raise ValueError("the graphs do not match the model inputs; re-run scripts/04_build_graphs.py")
-    if not (labels["node"].to_numpy() == np.arange(n)).all():
-        raise ValueError("labels.parquet is not in node order; re-run scripts/05_build_labels.py")
-    weights, adjacency = graphs.weights, graphs.adjacency
+    model_data = load_model_data(cfg)
+    n = len(model_data.patient_ids)
+    weights, adjacency = model_data.weights, model_data.adjacency
     nodes = np.arange(n)
     if n_patients is not None:
         if not 0 < n_patients <= n:
@@ -298,16 +386,15 @@ def load_training_data(cfg: Config, n_patients: int | None = None) -> TrainingDa
         nodes = np.sort(np.random.default_rng(cfg.seed).choice(n, n_patients, replace=False))
         weights = [W[nodes][:, nodes] for W in weights]
         adjacency = [normalize_adjacency(W) for W in weights]
-    patient_ids = [inputs.patient_ids[i] for i in nodes]
     data = make_training_data(
-        patient_ids,
-        inputs.years,
-        [X[nodes] for X in inputs.matrices],
+        [model_data.patient_ids[i] for i in nodes],
+        model_data.years,
+        [X[nodes] for X in model_data.matrices],
         weights,
         adjacency,
-        labels.iloc[nodes].reset_index(drop=True),
-        list(cfg.labels.onset_groups),
-        patient_demographics(load_patients(cfg), patient_ids, cfg.labels.cutoff_date),
+        model_data.labels.iloc[nodes].reset_index(drop=True),
+        model_data.groups,
+        model_data.demographics.iloc[nodes],
     )
     logger.info(
         "Training data: %d nodes, windows %d-%d, %d features, %d onset groups; split sizes %s; "
@@ -1120,6 +1207,447 @@ def write_training_summary(
     path.write_text(text, encoding="utf-8")
     logger.info("Wrote %s", path)
     return text
+
+
+# --- Phase 7b: the self-supervised TemporalGraphAE --------------------------------------
+
+
+@dataclass(frozen=True)
+class GraphAEData:
+    """Inputs and self-supervised targets of the ``TemporalGraphAE``: no onset labels.
+
+    Attributes:
+        patient_ids: Node order: the model cohort.
+        years: The windows, oldest first; all close by the prediction cutoff.
+        codes: The feature code block: the columns of the next-window targets.
+        features: Dense float32 [N, F] per window.
+        weights: ``W`` per window, CSR (N, N): the link-reconstruction edges.
+        adjacency: ``A_hat`` per window, torch sparse [N, N].
+        next_targets: [N, T - 1, C] (``next_window_targets``), every split.
+        split: Split name per node (``splits.json``).
+    """
+
+    patient_ids: tuple[str, ...]
+    years: tuple[int, ...]
+    codes: tuple[str, ...]
+    features: list[Tensor]
+    weights: list[sp.csr_matrix]
+    adjacency: list[Tensor]
+    next_targets: Tensor
+    split: np.ndarray
+
+
+@dataclass
+class GraphAEFitResult:
+    """Output of ``fit_graph_ae``.
+
+    Attributes:
+        model: The model with the weights of the best epoch, in eval mode.
+        history: One row per epoch run (see ``fit_graph_ae``).
+        best_epoch: Epoch with the lowest validation next-window loss.
+        epochs_run: Epochs actually run.
+        max_epochs: Epochs allowed.
+        stopped_early: Whether early stopping ended training.
+        seconds: Wall-clock training time.
+        pos_weight: [C] next-window ``pos_weight`` (training split).
+        next_window_weight: Weight of the next-window term in the objective.
+        link_only: Whether the next-window decoder was detached (link-only encoder).
+        pc1_share: ``models.pc1_share`` of the best epoch's final GRU states, all nodes.
+        link_auroc: The best epoch's link AUROC (``link_auroc``).
+    """
+
+    model: TemporalGraphAE
+    history: pd.DataFrame
+    best_epoch: int
+    epochs_run: int
+    max_epochs: int
+    stopped_early: bool
+    seconds: float
+    pos_weight: Tensor
+    next_window_weight: float
+    link_only: bool
+    pc1_share: float
+    link_auroc: float
+
+
+def next_window_targets(
+    windows: TrajectoryWindows,
+    patient_ids: Sequence[str],
+    codes: Sequence[str],
+    years: Sequence[int],
+    patients: pd.DataFrame,
+    cutoff: date,
+) -> np.ndarray:
+    """Return the next-window targets: the codes active in window t + 1, per state t.
+
+    Entry [i, t, c] is 1.0 if code c is active for node i in window ``years[t + 1]``
+    (``trajectories.window_trajectories``), else 0.0; NaN when the node is not at
+    risk in that window: born on or after its first day, or dead before it (a death
+    before the first day of a window that closes by the cutoff, so known by then).
+    Only ``years`` are read, and each must close by the cutoff, so the last pair is
+    the last training window; a window after the cutoff is never read.
+
+    Args:
+        windows: ``trajectories.load_windows`` output.
+        patient_ids: Node order.
+        codes: Target columns (the feature code block).
+        years: The training windows, oldest first (``config.feature_window_years``).
+        patients: ``data.load_patients`` output (birth_date, death_date).
+        cutoff: ``labels.cutoff_date``.
+
+    Returns:
+        Float32 [N, len(years) - 1, len(codes)].
+
+    Raises:
+        ValueError: If a year does not close by the cutoff or is missing from
+            ``windows``, or a node or code is missing.
+    """
+    late = [year for year in years if date(year + 1, 1, 1) > cutoff]
+    missing = sorted(set(years) - set(windows.years))
+    if late or missing:
+        raise ValueError(f"next-window targets need windows that close by {cutoff}: got years "
+                         f"{late} after it, {missing} missing")
+    rows = pd.Index(windows.patient_ids).get_indexer(list(patient_ids))
+    cols = pd.Index(windows.codes).get_indexer(list(codes))
+    if (rows < 0).any() or (cols < 0).any():
+        raise ValueError(f"{int((rows < 0).sum())} nodes and {int((cols < 0).sum())} codes are "
+                         "not in the windows")
+    targets = np.stack(
+        [windows[windows.years.index(year)][rows][:, cols].toarray() for year in years[1:]], axis=1
+    ).astype(np.float32)  # N x (T - 1) x C, never N x N
+    table = patients.set_index("patient_id").reindex(pd.Index(list(patient_ids)))
+    if table["birth_date"].isna().any():
+        raise ValueError(f"{int(table['birth_date'].isna().sum())} nodes have no birth date")
+    for t, year in enumerate(years[1:]):
+        start = pd.Timestamp(year=year, month=1, day=1, tz="UTC")
+        at_risk = (table["birth_date"] < start) & ~(table["death_date"] < start)  # NaT: alive
+        targets[~at_risk.to_numpy(), t] = np.nan
+    return targets
+
+
+def make_graph_ae_data(
+    patient_ids: Sequence[str],
+    years: Sequence[int],
+    codes: Sequence[str],
+    matrices: Sequence[sp.spmatrix],
+    weights: Sequence[sp.spmatrix],
+    next_targets: np.ndarray,
+    split: np.ndarray,
+) -> GraphAEData:
+    """Convert features, graphs and next-window targets to tensors.
+
+    ``A_hat`` is ``graph.normalize_adjacency`` of each ``W``.
+
+    Args:
+        patient_ids: Node order.
+        years: The windows, oldest first.
+        codes: The next-window target codes.
+        matrices: Sparse (N, F) features per window.
+        weights: ``W`` per window, (N, N).
+        next_targets: ``next_window_targets`` output.
+        split: Split name per node.
+
+    Returns:
+        The data.
+
+    Raises:
+        ValueError: If the shapes disagree.
+    """
+    n, T = len(patient_ids), len(years)
+    if next_targets.shape != (n, T - 1, len(codes)) or len(split) != n:
+        raise ValueError(f"next targets {next_targets.shape} and {len(split)} splits do not fit "
+                         f"{n} nodes, {T} windows and {len(codes)} codes")
+    return GraphAEData(
+        patient_ids=tuple(patient_ids),
+        years=tuple(years),
+        codes=tuple(codes),
+        features=[torch.from_numpy(sp.csr_matrix(X).toarray().astype(np.float32))
+                  for X in matrices],
+        weights=[sp.csr_matrix(W) for W in weights],
+        adjacency=[sparse_tensor(normalize_adjacency(W)) for W in weights],
+        next_targets=torch.from_numpy(np.asarray(next_targets, dtype=np.float32)),
+        split=np.asarray(split, dtype=str),
+    )
+
+
+def with_graphs(data: GraphAEData, weights: Sequence[sp.spmatrix]) -> GraphAEData:
+    """Return ``data`` with other graphs (e.g. empty or rewired), ``A_hat`` renormalized."""
+    if len(weights) != len(data.years):
+        raise ValueError(f"need one graph per window, got {len(weights)}")
+    return replace(data, weights=[sp.csr_matrix(W) for W in weights],
+                   adjacency=[sparse_tensor(normalize_adjacency(W)) for W in weights])
+
+
+def load_graph_ae_data(cfg: Config) -> GraphAEData:
+    """Load the model inputs, graphs, next-window targets and splits of the model cohort.
+
+    No labels are read: the split of each node comes from ``splits.json``.
+
+    Args:
+        cfg: Project configuration.
+
+    Returns:
+        The data, nodes in model-cohort order.
+
+    Raises:
+        ValueError: If the inputs and graphs disagree, or a node has no split.
+    """
+    inputs = load_model_inputs(cfg)
+    graphs = load_graphs(cfg)
+    if graphs.patient_ids != inputs.patient_ids or graphs.years != inputs.years:
+        raise ValueError("the graphs do not match the model inputs; "
+                         "re-run scripts/04_build_graphs.py")
+    split_of = {patient: name for name, members in load_splits(cfg).items() for patient in members}
+    missing = [p for p in inputs.patient_ids if p not in split_of]
+    if missing:
+        raise ValueError(f"{len(missing)} nodes have no split; re-run scripts/05_build_labels.py")
+    codes = load_feature_codes(cfg)
+    targets = next_window_targets(load_windows(cfg), inputs.patient_ids, codes, inputs.years,
+                                  load_patients(cfg), cfg.labels.cutoff_date)
+    split = np.array([split_of[p] for p in inputs.patient_ids])
+    data = make_graph_ae_data(inputs.patient_ids, inputs.years, codes, inputs.matrices,
+                              graphs.weights, targets, split)
+    observed = ~torch.isnan(data.next_targets[:, :, 0])
+    logger.info(
+        "GraphAE data: %d nodes, windows %d-%d, %d features, %d target codes; next-window pairs "
+        "%s; at-risk node-pairs per pair %s; split sizes %s",
+        len(data.patient_ids), data.years[0], data.years[-1], data.features[0].shape[1],
+        len(codes), [f"{a}->{b}" for a, b in zip(data.years, data.years[1:])],
+        observed.sum(dim=0).tolist(),
+        {name: int((split == name).sum()) for name in (TRAIN, VAL, TEST)},
+    )
+    return data
+
+
+def graph_ae_targets(data: GraphAEData, name: str) -> Tensor:
+    """Next-window targets of one split, every other node masked (NaN).
+
+    Args:
+        data: GraphAE data.
+        name: "train" or "val".
+
+    Returns:
+        [N, T - 1, C].
+
+    Raises:
+        ValueError: For the test split, whose next-window terms never enter a loss.
+    """
+    if name not in (TRAIN, VAL):
+        raise ValueError(f"only the train and val next-window targets enter a loss, not {name!r}")
+    inside = torch.from_numpy(data.split == name)[:, None, None]
+    return torch.where(inside, data.next_targets, torch.nan)
+
+
+def link_auroc(window_embeddings: Tensor, pairs: Sequence[tuple[Tensor, Tensor]]) -> float:
+    """Mean over windows with edges of the AUROC of ``link_logits``: edges vs non-edges."""
+    aurocs = []
+    for t, (positives, negatives) in enumerate(pairs):
+        if positives.shape[1] == 0:
+            continue
+        logits = link_logits(window_embeddings[:, t], torch.cat([positives, negatives], dim=1))
+        y = np.r_[np.ones(positives.shape[1]), np.zeros(negatives.shape[1])]
+        aurocs.append(roc_auc_score(y, logits.detach().numpy()))
+    return float(np.mean(aurocs)) if aurocs else float("nan")
+
+
+def fit_graph_ae(
+    data: GraphAEData,
+    ae_cfg: GraphAEConfig,
+    seed: int,
+    link_only: bool = False,
+    epochs: int | None = None,
+    verbose: bool = True,
+) -> GraphAEFitResult:
+    """Train a ``TemporalGraphAE`` full-batch with Adam; early stopping on validation.
+
+    Each epoch takes one step on ``models.graph_ae_loss``: the link term over every
+    node's edges (fresh negatives each epoch) plus ``graph_ae.next_window_weight`` x
+    the next-window BCE of the training-split nodes only. Validation-split nodes'
+    next-window loss (eval mode) picks the epoch: training stops after
+    ``graph_ae.patience`` epochs without a lower one and the best epoch's weights
+    are restored. Test-split nodes pass messages and enter the link term, but no
+    next-window term ever reads their targets. With ``link_only`` the next-window
+    decoder is detached (a readout for early stopping, with weight 1); only the link
+    term trains the encoder.
+
+    History columns: epoch, objective, objective_link, objective_next (the
+    dropout-on terms minimized), link_loss (eval mode, on one fixed draw of
+    negatives), train_next_loss, val_next_loss (eval mode), and every
+    ``graph_ae.log_every_epochs`` epochs (NaN otherwise) pc1_share (of the final
+    GRU states, all nodes: the anti-collapse check) and link_auroc.
+
+    Args:
+        data: GraphAE data.
+        ae_cfg: The ``graph_ae`` section.
+        seed: Random seed for the initial weights, dropout and negative sampling.
+        link_only: Train the encoder on the link term only.
+        epochs: Maximum epochs; defaults to ``graph_ae.epochs``.
+        verbose: Log progress; the summary line at the end is always logged.
+
+    Returns:
+        The trained model and its history.
+    """
+    set_seed(seed)
+    model = build_graph_ae(ae_cfg, data.features[0].shape[1], len(data.codes), link_only)
+    optimizer = torch.optim.Adam(model.parameters(), lr=ae_cfg.lr, weight_decay=ae_cfg.weight_decay)
+    train_targets, val_targets = graph_ae_targets(data, TRAIN), graph_ae_targets(data, VAL)
+    pos_weight = positive_weights(train_targets.reshape(-1, len(data.codes)))
+    weight = 1.0 if link_only else ae_cfg.next_window_weight
+    sampler = LinkSampler(data.weights, seed)
+    fixed_pairs = sampler.sample()  # one draw of negatives for the eval-mode link metrics
+
+    max_epochs = ae_cfg.epochs if epochs is None else epochs
+    rows: list[dict[str, float]] = []
+    best_loss, best_epoch, best_state, since_best = np.inf, 0, None, 0
+    stopped_early = False
+    start = perf_counter()
+    for epoch in range(1, max_epochs + 1):
+        model.train()
+        optimizer.zero_grad()
+        parts = graph_ae_loss(model(data.features, data.adjacency), sampler.sample(),
+                              train_targets, pos_weight, weight)
+        parts.total.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), ae_cfg.grad_clip_norm)
+        optimizer.step()
+
+        model.eval()
+        with torch.no_grad():
+            output = model(data.features, data.adjacency)
+            row: dict[str, float] = {
+                "epoch": epoch, "objective": float(parts.total),
+                "objective_link": float(parts.link), "objective_next": float(parts.next_window),
+                "link_loss": float(link_loss(output.window_embeddings, fixed_pairs)),
+                "train_next_loss": float(masked_bce(output.next_logits, train_targets, pos_weight)),
+                "val_next_loss": float(masked_bce(output.next_logits, val_targets, pos_weight)),
+                "pc1_share": np.nan, "link_auroc": np.nan,
+            }
+            logged = epoch % ae_cfg.log_every_epochs == 0 or epoch == 1
+            if logged:
+                row["pc1_share"] = pc1_share(output.trajectory_embeddings)
+                row["link_auroc"] = link_auroc(output.window_embeddings, fixed_pairs)
+        rows.append(row)
+
+        improved = row["val_next_loss"] < best_loss  # False while the loss is undefined (NaN)
+        if improved:
+            best_loss, best_epoch, since_best = row["val_next_loss"], epoch, 0
+            best_state = copy.deepcopy(model.state_dict())
+        else:
+            since_best += 1
+        if verbose and logged:
+            logger.info(
+                "Epoch %3d: objective %.4f (link %.4f, next %.4f); eval: link %.4f, link AUROC "
+                "%.3f, train next %.4f, val next %.4f%s; PC1 share of h %.3f",
+                epoch, row["objective"], row["objective_link"], row["objective_next"],
+                row["link_loss"], row["link_auroc"], row["train_next_loss"], row["val_next_loss"],
+                " (best)" if improved else "", row["pc1_share"],
+            )
+        if since_best >= ae_cfg.patience:
+            stopped_early = True
+            break
+    seconds = perf_counter() - start
+
+    if best_state is None:
+        logger.warning("The validation next-window loss was never defined; keeping the last epoch")
+        best_epoch = len(rows)
+    else:
+        model.load_state_dict(best_state)
+    model.eval()
+    with torch.no_grad():
+        output = model(data.features, data.adjacency)
+    share, auroc = pc1_share(output.trajectory_embeddings), link_auroc(output.window_embeddings,
+                                                                        fixed_pairs)
+    logger.info(
+        "GraphAE (%s, next-window weight %g, seed %d): %d epochs in %.1f s%s; best epoch %d, "
+        "validation next-window loss %.4f, link AUROC %.3f, PC1 share of h %.3f",
+        "link only" if link_only else "link + next window", weight, seed, len(rows), seconds,
+        " (early stop)" if stopped_early else "", best_epoch,
+        rows[best_epoch - 1]["val_next_loss"], auroc, share,
+    )
+    return GraphAEFitResult(
+        model=model, history=pd.DataFrame(rows), best_epoch=best_epoch, epochs_run=len(rows),
+        max_epochs=max_epochs, stopped_early=stopped_early, seconds=seconds, pos_weight=pos_weight,
+        next_window_weight=weight, link_only=link_only, pc1_share=share, link_auroc=auroc,
+    )
+
+
+def graph_ae_states(model: TemporalGraphAE, data: GraphAEData) -> np.ndarray:
+    """The GRU state after every window, [N, T, embed_dim], in eval mode on ``data``'s graphs."""
+    model.eval()
+    with torch.no_grad():
+        return model(data.features, data.adjacency).states.numpy().astype(np.float64)
+
+
+def tune_graph_ae(
+    data: GraphAEData, ae_cfg: GraphAEConfig
+) -> tuple[pd.DataFrame, dict[tuple[float, int], GraphAEFitResult]]:
+    """Train every ``graph_ae.tuning_next_window_weights`` once per ``tuning_seeds``.
+
+    Validation next-window loss only: early stopping and the score. Test-split
+    next-window targets enter no loss.
+
+    Args:
+        data: GraphAE data.
+        ae_cfg: The ``graph_ae`` section.
+
+    Returns:
+        ``GRAPH_AE_RUN_COLUMNS`` (one row per run) and each run's fit, by (weight, seed).
+    """
+    rows, fits = [], {}
+    for weight in ae_cfg.tuning_next_window_weights:
+        for seed in ae_cfg.tuning_seeds:
+            result = fit_graph_ae(data, replace(ae_cfg, next_window_weight=weight), seed,
+                                  verbose=False)
+            best = result.history.iloc[result.best_epoch - 1]
+            rows.append({
+                "next_window_weight": weight, "seed": seed, "best_epoch": result.best_epoch,
+                "epochs_run": result.epochs_run, "val_next_loss": float(best["val_next_loss"]),
+                "train_next_loss": float(best["train_next_loss"]),
+                "link_loss": float(best["link_loss"]), "link_auroc": result.link_auroc,
+                "pc1_share": result.pc1_share, "seconds": round(result.seconds, 2),
+            })
+            fits[(weight, seed)] = result
+    return pd.DataFrame(rows, columns=GRAPH_AE_RUN_COLUMNS), fits
+
+
+def select_next_window_weight(runs: pd.DataFrame) -> tuple[float, pd.DataFrame]:
+    """Pick the next-window weight with the lowest mean validation next-window loss.
+
+    Args:
+        runs: ``tune_graph_ae`` output.
+
+    Returns:
+        The weight and the per-weight summary: next_window_weight, seeds,
+        val_next_loss_mean, val_next_loss_sd (ddof 1), best_epoch_mean,
+        link_auroc_mean, pc1_share_mean; lowest mean loss first.
+    """
+    summary = (
+        runs.groupby("next_window_weight", sort=True)
+        .agg(seeds=("seed", "size"), val_next_loss_mean=("val_next_loss", "mean"),
+             val_next_loss_sd=("val_next_loss", "std"), best_epoch_mean=("best_epoch", "mean"),
+             link_auroc_mean=("link_auroc", "mean"), pc1_share_mean=("pc1_share", "mean"))
+        .reset_index()
+        .sort_values(["val_next_loss_mean", "next_window_weight"], kind="stable")
+        .reset_index(drop=True)
+    )
+    return float(summary["next_window_weight"].iloc[0]), summary
+
+
+def save_graph_ae(result: GraphAEFitResult, directory: Path, key: str) -> None:
+    """Write the ``state_dict`` (``<key>.pt``) and the history (``<key>_log.csv``)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    torch.save(result.model.state_dict(), directory / f"{key}.pt")
+    result.history.to_csv(directory / f"{key}_log.csv", index=False)
+    logger.info("Wrote %s and %s", directory / f"{key}.pt", directory / f"{key}_log.csv")
+
+
+def load_graph_ae(
+    ae_cfg: GraphAEConfig, path: Path, in_dim: int, n_codes: int, link_only: bool = False
+) -> TemporalGraphAE:
+    """Rebuild a ``TemporalGraphAE`` and load a ``state_dict`` saved by ``save_graph_ae``."""
+    model = build_graph_ae(ae_cfg, in_dim, n_codes, link_only)
+    model.load_state_dict(torch.load(path, weights_only=True))
+    model.eval()
+    return model
 
 
 def _smoothness_term(data: TrainingData) -> Callable[[ModelOutput], Tensor]:

@@ -10,9 +10,9 @@ reports/training_summary.md (all paths from config/config.yaml). Training is
 transductive: every patient passes messages, only training labels enter the loss,
 and test labels are never read.
 
-Then fits temperature scaling on the validation logits of any_onset
-(artifacts/temperature.json, reports/figures/reliability_any_onset.png) and, if
-06a_baselines.py has run, compares the model with the baselines on the same
+Then calibrates the validation logits of any_onset with calibration.method (Platt
+scaling by default; artifacts/calibration.json, reports/figures/reliability_any_onset.png)
+and, if 06a_baselines.py has run, compares the model with the baselines on the same
 validation bootstrap resamples. --quick runs model.quick_epochs epochs on
 model.quick_patients patients, skips the comparison and writes to paths.quick_dir::
 
@@ -37,7 +37,7 @@ from ehrgraph.evaluate import (
     comparison_section,
     load_baseline_scores,
     plot_reliability,
-    save_temperature,
+    save_calibration,
     sigmoid,
     validation_logits,
 )
@@ -81,8 +81,8 @@ def main(argv: list[str] | None = None) -> None:
     plot_training_curves(result.history, result.best_epoch, outputs.training_curves_fig, cfg)
 
     logits, targets, patient_ids = validation_logits(result.model, data)
-    calibration = calibrate(logits, targets, cfg.evaluation, cfg.seed)
-    save_temperature(calibration, outputs.temperature_json)
+    calibration = calibrate(logits, targets, cfg.calibration.method, cfg.evaluation, cfg.seed)
+    save_calibration(calibration, outputs.calibration_json)
     plot_reliability(calibration, outputs.reliability_fig, cfg)
     sections = _comparison(cfg, logits, targets, patient_ids, data.years, args.quick)
     sections += _calibration(calibration, outputs, cfg)
@@ -133,7 +133,7 @@ def _comparison(
 def _calibration(calibration: Calibration, outputs: TrainOutputs, cfg: Config) -> list[str]:
     """Markdown for the calibration, with the figure linked relative to the report."""
     figure = Path(os.path.relpath(outputs.reliability_fig, outputs.training_summary_md.parent))
-    return calibration_section(calibration, figure.as_posix(), outputs.temperature_json.name, cfg)
+    return calibration_section(calibration, figure.as_posix(), outputs.calibration_json.name, cfg)
 
 
 if __name__ == "__main__":

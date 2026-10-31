@@ -16,6 +16,12 @@ node takes part in message passing. Which labels enter a loss is set by the
 targets alone: a NaN target is masked and contributes nothing (``masked_bce``).
 Demographics enter the heads only: never the graphs or the node features, so the
 embeddings Z and h do not depend on them.
+
+``TemporalGraphAE`` (Phase 7b) is the same encoder trained without labels::
+
+    Z, states   = TemporalGCN.sequence(X, A_hat)  # states[:, t]: GRU state after window t
+    link logits = z_i . z_j on Z_t                # window t's edges vs sampled non-edges
+    next logits = linear(states[:, t])            # codes active in window t + 1
 """
 
 from __future__ import annotations
@@ -30,7 +36,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from ehrgraph.config import ModelConfig
+from ehrgraph.config import GraphAEConfig, ModelConfig
 from ehrgraph.features import DEMOGRAPHICS
 from ehrgraph.graph import laplacian
 
@@ -158,14 +164,35 @@ class TemporalGCN(nn.Module):
         Raises:
             ValueError: If there are no windows or the two sequences differ in length.
         """
+        Z, states = self.sequence(features, adjacency)
+        return Z, states[:, -1]
+
+    def sequence(
+        self, features: Sequence[Tensor], adjacency: Sequence[Tensor]
+    ) -> tuple[Tensor, Tensor]:
+        """Embed each window and return the GRU hidden state after every window.
+
+        The state after window t reads windows 1..t only, never a later one.
+
+        Args:
+            features: Dense [N, in_dim] per window, oldest first.
+            adjacency: Sparse [N, N] ``A_hat`` per window, same order.
+
+        Returns:
+            Z, [N, T, embed_dim], and the GRU states, [N, T, embed_dim]; the last
+            state is the trajectory embedding h.
+
+        Raises:
+            ValueError: If there are no windows or the two sequences differ in length.
+        """
         if not features or len(features) != len(adjacency):
             raise ValueError(
                 f"need one adjacency per window, got {len(features)} feature matrices and "
                 f"{len(adjacency)} adjacencies"
             )
         Z = torch.stack([self.encoder(X, A) for X, A in zip(features, adjacency)], dim=1)
-        _, h_n = self.gru(Z)
-        return Z, h_n[-1]
+        states, _ = self.gru(Z)  # one layer: states[:, -1] is the final hidden state
+        return Z, states
 
 
 class OnsetHeads(nn.Module):
@@ -429,6 +456,233 @@ def graph_smoothness(
         denominator = Z[has_edge].pow(2).sum().clamp(min=torch.finfo(Z.dtype).tiny)
         energies.append(numerator / denominator)
     return torch.stack(energies).mean()
+
+
+@dataclass(frozen=True)
+class GraphAEOutput:
+    """Output of ``TemporalGraphAE`` for N nodes, T windows and C codes.
+
+    Attributes:
+        window_embeddings: Z, [N, T, embed_dim]: the spatial encoder's output per
+            window, decoded into that window's edges.
+        states: The GRU state after each window, [N, T, embed_dim].
+        next_logits: [N, T - 1, C]: from the state after window t, the logits of
+            each code being active in window t + 1.
+    """
+
+    window_embeddings: Tensor
+    states: Tensor
+    next_logits: Tensor
+
+    @property
+    def trajectory_embeddings(self) -> Tensor:
+        """h, [N, embed_dim]: the GRU state after the last window."""
+        return self.states[:, -1]
+
+
+class GraphAELoss(NamedTuple):
+    """``total = link + next_window_weight * next_window`` (see ``graph_ae_loss``)."""
+
+    total: Tensor
+    link: Tensor
+    next_window: Tensor
+
+
+class TemporalGraphAE(nn.Module):
+    """Self-supervised ``TemporalGCN``: per-window link reconstruction and next-window codes.
+
+    The encoder is a ``TemporalGCN`` (a shared ``SpatialEncoder`` per window, then a
+    GRU), with no demographics and no onset head. Two decoders:
+
+    * links: ``sigmoid(z_i . z_j)`` on window t's Z_t (``link_loss``);
+    * next window: a linear map from the GRU state after window t to the logits
+      of the codes active in window t + 1.
+
+    With ``detach_next_window`` the next-window decoder reads the states with their
+    gradient cut: it is then a linear readout trained alongside (for early stopping),
+    and only the link term shapes the encoder and the GRU (which then stays as
+    initialized).
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        n_codes: int,
+        hidden_dim: int,
+        embed_dim: int,
+        dropout: float,
+        detach_next_window: bool = False,
+    ) -> None:
+        """Create the model.
+
+        Args:
+            in_dim: Number of input features per node.
+            n_codes: Codes of the next-window target (the feature code block).
+            hidden_dim: Width of the hidden GCN layer.
+            embed_dim: Width of Z_t and of the GRU states.
+            dropout: Dropout rate between the GCN layers.
+            detach_next_window: Cut the next-window gradient from the states.
+        """
+        super().__init__()
+        self.detach_next_window = detach_next_window
+        self.temporal = TemporalGCN(in_dim, hidden_dim, embed_dim, dropout)
+        self.next_window = nn.Linear(embed_dim, n_codes)
+
+    def forward(self, features: Sequence[Tensor], adjacency: Sequence[Tensor]) -> GraphAEOutput:
+        """Embed every node in every window and decode the next window's codes.
+
+        Args:
+            features: Dense [N, in_dim] per window, oldest first.
+            adjacency: Sparse [N, N] ``A_hat`` per window, same order.
+
+        Returns:
+            The embeddings, GRU states and next-window logits of all N nodes.
+        """
+        Z, states = self.temporal.sequence(features, adjacency)
+        source = states[:, :-1]
+        if self.detach_next_window:
+            source = source.detach()
+        return GraphAEOutput(Z, states, self.next_window(source))
+
+
+def build_graph_ae(
+    ae_cfg: GraphAEConfig, in_dim: int, n_codes: int, link_only: bool = False
+) -> TemporalGraphAE:
+    """Create a ``TemporalGraphAE`` with the configured widths and dropout.
+
+    Seed the RNG first (``utils.set_seed``) for reproducible initial weights.
+
+    Args:
+        ae_cfg: The ``graph_ae`` section of the configuration.
+        in_dim: Number of input features per node.
+        n_codes: Codes of the next-window target.
+        link_only: Detach the next-window decoder (``TemporalGraphAE``).
+
+    Returns:
+        The untrained model.
+    """
+    return TemporalGraphAE(in_dim, n_codes, ae_cfg.hidden_dim, ae_cfg.embed_dim, ae_cfg.dropout,
+                           detach_next_window=link_only)
+
+
+class LinkSampler:
+    """Positive edges and uniformly sampled non-edges of each window, for ``link_loss``.
+
+    Positives are each window's undirected edges, once each (upper triangle of
+    ``W``). Each ``sample`` draws as many negatives per window: pairs of distinct
+    nodes, both with at least one edge in that window (isolated nodes are skipped),
+    drawn uniformly and redrawn while they are an edge. Pairs are stored with the
+    smaller node first. A window without edges gives no pairs.
+    """
+
+    def __init__(self, weights: Sequence[sp.spmatrix], seed: int) -> None:
+        """Index each window's edges and connected nodes.
+
+        Args:
+            weights: Symmetric (N, N) ``W`` per window, without self-loops.
+            seed: Seed of the generator that draws the negatives.
+
+        Raises:
+            ValueError: If a window with edges has no non-edge between connected nodes.
+        """
+        self.rng = np.random.default_rng(seed)
+        self._windows = []
+        for W in weights:
+            W = sp.csr_matrix(W)
+            n = W.shape[0]
+            upper = sp.triu(W, k=1).tocoo()
+            rows, cols = upper.row.astype(np.int64), upper.col.astype(np.int64)
+            nodes = np.flatnonzero(np.diff(W.indptr) > 0)
+            if len(rows) and len(rows) >= len(nodes) * (len(nodes) - 1) // 2:
+                raise ValueError("a window's connected nodes are all linked: no non-edge to sample")
+            self._windows.append((torch.from_numpy(np.vstack([rows, cols])), nodes,
+                                  np.sort(rows * n + cols), n))
+
+    def sample(self) -> list[tuple[Tensor, Tensor]]:
+        """Return (positives, negatives) per window, each a [2, m] index tensor."""
+        return [(positives, self._negatives(nodes, keys, n, positives.shape[1]))
+                for positives, nodes, keys, n in self._windows]
+
+    def _negatives(self, nodes: np.ndarray, keys: np.ndarray, n: int, m: int) -> Tensor:
+        """Draw ``m`` non-edges between distinct ``nodes``; ``keys`` encode the edges."""
+        found = np.empty((2, 0), dtype=np.int64)
+        while found.shape[1] < m:
+            draw = self.rng.choice(nodes, size=(2, m - found.shape[1]))
+            low, high = draw.min(axis=0), draw.max(axis=0)
+            keep = (low != high) & ~np.isin(low * n + high, keys)
+            found = np.hstack([found, np.vstack([low, high])[:, keep]])
+        return torch.from_numpy(found)
+
+
+def link_logits(Z: Tensor, pairs: Tensor) -> Tensor:
+    """Inner-product decoder: ``z_i . z_j`` for each column (i, j) of ``pairs`` [2, m]."""
+    return (Z[pairs[0]] * Z[pairs[1]]).sum(dim=-1)
+
+
+def link_loss(window_embeddings: Tensor, pairs: Sequence[tuple[Tensor, Tensor]]) -> Tensor:
+    """Mean over windows with edges of the link-reconstruction BCE.
+
+    In window t, the BCE of ``sigmoid(z_i . z_j)`` (``link_logits`` of Z_t) against 1
+    for the positives and 0 for the negatives, averaged over both. Windows without
+    edges are skipped; with none at all the loss is 0.
+
+    Args:
+        window_embeddings: Z, [N, T, d].
+        pairs: (positives, negatives) per window (``LinkSampler.sample``).
+
+    Returns:
+        A scalar tensor.
+    """
+    losses = []
+    for t, (positives, negatives) in enumerate(pairs):
+        if positives.shape[1] == 0:
+            continue
+        Z = window_embeddings[:, t]
+        logits = link_logits(Z, torch.cat([positives, negatives], dim=1))
+        targets = torch.cat([torch.ones(positives.shape[1]), torch.zeros(negatives.shape[1])])
+        losses.append(F.binary_cross_entropy_with_logits(logits, targets))
+    if not losses:
+        return window_embeddings.new_zeros(())
+    return torch.stack(losses).mean()
+
+
+def graph_ae_loss(
+    output: GraphAEOutput,
+    pairs: Sequence[tuple[Tensor, Tensor]],
+    next_targets: Tensor,
+    pos_weight: Tensor,
+    next_window_weight: float,
+) -> GraphAELoss:
+    """Return ``link_loss + next_window_weight * masked BCE(next window)``.
+
+    Restrict the next-window term to some patients (a split) by setting the other
+    patients' targets to NaN: they still pass messages and enter the link term.
+
+    Args:
+        output: ``TemporalGraphAE`` output.
+        pairs: (positives, negatives) per window.
+        next_targets: [N, T - 1, C]: 1.0, 0.0 or NaN (masked).
+        pos_weight: [C] ``positive_weights`` of the training targets.
+        next_window_weight: Weight of the next-window term.
+
+    Returns:
+        The total and its two terms.
+    """
+    link = link_loss(output.window_embeddings, pairs)
+    next_window = masked_bce(output.next_logits, next_targets, pos_weight)
+    return GraphAELoss(link + next_window_weight * next_window, link, next_window)
+
+
+def pc1_share(X: Tensor | np.ndarray) -> float:
+    """Share of the variance of the rows of ``X`` [n, d] on their first principal component.
+
+    1 means every row lies on one line (a collapsed embedding); 1 / d is the floor.
+    NaN if all rows are equal.
+    """
+    X = np.asarray(X.detach().numpy() if isinstance(X, Tensor) else X, dtype=np.float64)
+    singular = np.linalg.svd(X - X.mean(axis=0), compute_uv=False)  # n x d, not n x n
+    total = np.sum(singular**2)
+    return float(singular[0] ** 2 / total) if total > 0 else float("nan")
 
 
 def smoothness_laplacian(W: sp.spmatrix) -> sp.csr_matrix:

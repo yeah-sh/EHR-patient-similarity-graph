@@ -62,8 +62,9 @@ paths:
   trajectory_embeddings_npy: artifacts/trajectory_embeddings.npy
   training_curves_fig: reports/figures/training_curves.png
   training_summary_md: reports/training_summary.md
-  # Temperature scaling of the any_onset logits, fitted on validation (06_train.py).
-  temperature_json: artifacts/temperature.json
+  # Calibration of the any_onset logits (calibration.method), fitted on validation by
+  # 06_train.py: the method and its slope and intercept.
+  calibration_json: artifacts/calibration.json
   reliability_fig: reports/figures/reliability_any_onset.png
   # scripts/06_train.py --quick writes every Phase 6 output here instead, under the
   # same file names, so a smoke test never overwrites the real model.
@@ -76,6 +77,35 @@ paths:
   baseline_val_scores_csv: artifacts/baseline_val_scores.csv
   tuning_results_csv: reports/tuning_results.csv
   tuning_summary_md: reports/tuning_summary.md
+  # Phase 7 (scripts/07_evaluate.py): the cross-validation table (results.csv), every
+  # result (results.md) and the plain-language findings.
+  results_md: reports/results.md
+  results_csv: reports/results.csv
+  evaluation_summary_md: reports/evaluation_summary.md
+  # Out-of-fold predictions of every model (07_evaluate.py --reuse-cv reads them back),
+  # one row per fit (fold, model, seed), and the final model's predictions.
+  cv_predictions_csv: artifacts/cv_oof_predictions.csv
+  cv_fits_csv: artifacts/cv_fits.csv
+  test_predictions_csv: artifacts/test_predictions.csv
+  cv_auroc_fig: reports/figures/cv_auroc.png
+  test_reliability_fig: reports/figures/reliability_test.png
+  umap_phenotype_fig: reports/figures/umap_phenotype.png
+  umap_age_fig: reports/figures/umap_age_group.png
+  umap_chronic_fig: reports/figures/umap_chronic_conditions.png
+  trajectory_umap_fig: reports/figures/trajectories_umap.png
+  # Phase 7b (scripts/07b_embeddings.py): the self-supervised TemporalGraphAE. graph_ae_dir
+  # holds each variant's state_dict (<key>.pt) and training log (<key>_log.csv), the
+  # tuning runs and the config used; embeddings_npz every compared embedding.
+  graph_ae_dir: artifacts/graph_ae
+  embeddings_npz: artifacts/embeddings_7b.npz
+  embedding_results_md: reports/embedding_results.md
+  embedding_results_csv: reports/embedding_results.csv
+  embedding_summary_md: reports/embedding_summary.md
+  ae_umap_phenotype_fig: reports/figures/ae_umap_phenotype.png
+  ae_umap_age_fig: reports/figures/ae_umap_age_group.png
+  ae_umap_chronic_fig: reports/figures/ae_umap_chronic_conditions.png
+  ae_trajectory_fig: reports/figures/ae_trajectories_umap.png
+  next_year_auroc_fig: reports/figures/next_year_auroc.png
 
 # Global random seed used by random, numpy and torch.
 seed: 42
@@ -365,19 +395,121 @@ tuning:
   # Settings listed in reports/tuning_summary.md.
   top_n_report: 5
 
-# Validation metrics (evaluate): bootstrap CIs and calibration.
+# Metrics (evaluate): bootstrap CIs and calibration, on validation (Phase 6) and on the
+# test set and out-of-fold predictions (Phase 7).
 evaluation:
-  # Percentile bootstrap over validation patients, drawn with the global seed.
+  # Percentile bootstrap over the scored patients, drawn with the global seed.
   bootstrap_resamples: 1000
   ci_level: 0.95
   # Reliability diagram and expected calibration error: equal-count bins.
   calibration_bins: 10
-  # Out-of-sample check of temperature scaling: refit on k - 1 stratified folds of the
+  # Out-of-sample check of the calibration: refit on k - 1 stratified folds of the
   # validation patients and score the held-out fold.
   calibration_cv_folds: 5
-  # Search range of the temperature. Logits that barely rank (e.g. a small fold) can
-  # push the fit to T -> infinity (every probability 0.5); a fit at a bound is logged.
+  # Search range of the temperature (calibration.method: temperature). Logits that barely
+  # rank (e.g. a small fold) can push the fit to T -> infinity (every probability 0.5); a
+  # fit at a bound is logged.
   temperature_bounds: [0.01, 100.0]
+
+# Calibration of the any_onset logits, fitted on validation predictions (06_train.py) and
+# on each cross-validation fold's inner validation set (07_evaluate.py).
+calibration:
+  # platt: logistic regression of the label on the logit, with an intercept, by maximum
+  # likelihood: probability = sigmoid(slope * logit + intercept). The intercept can undo
+  # the upward shift that training with pos_weight gives the logits.
+  # temperature: probability = sigmoid(logit / T); rescales logits around 0 only.
+  method: platt
+
+# Phase 7 cross-validation (evaluate.run_cross_validation, scripts/07_evaluate.py): every
+# patient with an observed any_onset label, in folds stratified by Phase 4 phenotype cluster
+# x any_onset, drawn with the global seed. Every model value stays as in the model section.
+cross_validation:
+  folds: 5
+  # Share of each fold's training patients (stratified the same way) held out for early
+  # stopping and calibration; every model is fitted on the rest.
+  inner_val: 0.15
+  # Every GCN model is trained once per seed in each fold; the seeds' logits are averaged.
+  seeds: [42, 43, 44]
+  # Negative control (model 7): each window's graph rewired by degree-preserving double
+  # edge swaps, this many attempted swaps per edge, drawn with the global seed.
+  rewire_swaps_per_edge: 10
+  # Reporting only: a model whose out-of-fold logits rank patients like age and sex alone
+  # (mean within-fold Spearman correlation with model 1 at least this) is reported as
+  # having learned little beyond the demographics in its heads.
+  demographic_rank_correlation: 0.9
+
+# Phase 7 embedding analysis of the final model (evaluate.analyse_embeddings).
+embedding_analysis:
+  # UMAP (umap-learn), seeded with the global seed.
+  umap_n_neighbors: 15
+  umap_min_dist: 0.1
+  # Bins of the number of chronic conditions active in 2017-2022, left-closed; .inf
+  # leaves the last open.
+  chronic_count_bins: [0, 1, 2, 4, 7, .inf]
+  # Trajectory figure: patients drawn with the global seed (a different phenotype each
+  # while possible) among those with a non-empty feature row in every window and at least
+  # trajectory_min_onsets chronic-condition onsets in those windows.
+  trajectory_patients: 5
+  trajectory_min_onsets: 2
+  # Onsets written beside each point of the figure (the rest counted as "+n"), each cut
+  # to this many characters.
+  max_onset_labels: 2
+  onset_label_chars: 30
+  # Nearest-neighbour check: patients drawn the same way among those with at least
+  # neighbour_min_conditions chronic conditions, and neighbours listed per patient.
+  neighbour_patients: 3
+  n_neighbours: 5
+  neighbour_min_conditions: 3
+
+# Phase 7b: self-supervised temporal graph autoencoder (models.TemporalGraphAE, trained by
+# train.fit_graph_ae). The encoder is the TemporalGCN's (shared 2-layer GCN per window, GRU
+# over the windows), with no demographics and no onset labels. Loss = link reconstruction
+# (inner-product decoder on each window's k-NN edges vs as many sampled non-edges, BCE) +
+# next_window_weight * next-window BCE (a linear decoder from the GRU state at window t to
+# the active codes of window t + 1, pairs 2017->2018 ... 2021->2022 only, pos_weight per
+# code from the training split). Only training-split patients' next-window terms enter the
+# loss; validation-split patients' pick the epoch; test-split patients pass messages and
+# enter the link term but never a next-window term.
+graph_ae:
+  # The Phase 6 TemporalGCN setting (baselines.reference_model): not searched.
+  hidden_dim: 64
+  embed_dim: 32
+  dropout: 0.5
+  lr: 0.01
+  weight_decay: 5.0e-4
+  epochs: 300
+  # Early stopping: stop after this many epochs without a lower validation next-window
+  # loss; the weights of the best epoch are kept.
+  patience: 20
+  grad_clip_norm: 1.0
+  # Default weight of the next-window term; scripts/07b_embeddings.py trains its final
+  # models with the tuning choice below.
+  next_window_weight: 1.0
+  # Log progress, and the share of variance on the first principal component of the
+  # final GRU states (the anti-collapse check), every this many epochs.
+  log_every_epochs: 10
+  # Only next_window_weight is tuned (embed_dim stays 32), each value trained once per
+  # seed and chosen by the lowest mean validation next-window loss (unweighted BCE, so
+  # comparable across weights).
+  tuning_next_window_weights: [0.5, 1.0, 2.0]
+  tuning_seeds: [42, 43, 44]
+
+# Phase 7b embedding comparison (ehrgraph.embeddings, scripts/07b_embeddings.py).
+embedding_eval:
+  # Width of every compared embedding: PCA components, Laplacian eigenvectors.
+  dim: 32
+  # Next-year new-condition prediction 2021 -> 2022: one logistic regression per code on
+  # the 2021 embedding, for codes with at least this many new onsets (first-ever event in
+  # 2022) among training-split patients at risk; fitted on training-split patients and
+  # scored on test-split patients. Unweighted classes, so the probabilities of different
+  # codes are on one scale for the pooled (micro) AUROC.
+  min_train_onsets: 20
+  C: 1.0
+  max_iter: 5000
+  balanced_class_weight: false
+  # Neighbour concordance: mean Jaccard of chronic conditions with this many nearest
+  # neighbours (cosine), for test-split patients with a chronic condition.
+  n_neighbours: 5
 
 # Patient-level split of the model cohort (labels.stratified_split), stratified by
 # Phase 4 phenotype cluster x any_onset label (masked is its own value), drawn with the
